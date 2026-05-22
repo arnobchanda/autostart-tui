@@ -32,7 +32,7 @@ from typing import Literal
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.theme import Theme
-from textual.widgets import DataTable, Footer, Header, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Header, Static, TabbedContent, TabPane
 
 # ---------- Paths ----------
 
@@ -303,6 +303,16 @@ class AutostartApp(App):
         color: $foreground;
     }
 
+    #exec-preview {
+        height: auto;
+        min-height: 2;
+        max-height: 4;
+        padding: 0 1;
+        background: $panel;
+        color: $accent;
+        border-top: solid $primary 40%;
+    }
+
     Header {
         background: $primary 40%;
     }
@@ -319,10 +329,12 @@ class AutostartApp(App):
         Binding("2", "show_tab('launcher')", "Launcher"),
         Binding("tab", "next_tab", "Switch tab", show=False),
         Binding("q,escape", "quit", "Quit"),
-        Binding("j", "down", "Down", show=False),
-        Binding("k", "up", "Up", show=False),
+        Binding("j,down", "down", "Down", show=False),
+        Binding("k,up", "up", "Up", show=False),
         Binding("g,home", "top", "Top", show=False),
         Binding("shift+g,end", "bottom", "Bottom", show=False),
+        Binding("pageup", "page_up", "PgUp", show=False),
+        Binding("pagedown", "page_down", "PgDn", show=False),
     ]
 
     def __init__(self) -> None:
@@ -336,6 +348,7 @@ class AutostartApp(App):
                 yield DataTable(id="autostart-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Launcher [2]", id="launcher-tab"):
                 yield DataTable(id="launcher-table", cursor_type="row", zebra_stripes=True)
+        yield Static("", id="exec-preview", markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -344,15 +357,16 @@ class AutostartApp(App):
             self.register_theme(theme)
             self.theme = "omarchy"
 
-        for kind, tid in (("autostart", "#autostart-table"), ("launcher", "#launcher-table")):
+        for tid in ("#autostart-table", "#launcher-table"):
             table = self.query_one(tid, DataTable)
-            table.add_column("State", width=7)
+            table.add_column("State", width=8)
             table.add_column("Source", width=14)
-            table.add_column("Name", width=34)
-            table.add_column("Exec")
+            table.add_column("Name")
 
         self._reload("autostart")
         self._reload("launcher")
+        self._active_table().focus()
+        self._update_preview()
 
     # --- actions ---
 
@@ -386,10 +400,14 @@ class AutostartApp(App):
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = f"{tab_id}-tab"
+        self._active_table().focus()
+        self._update_preview()
 
     def action_next_tab(self) -> None:
         tabs = self.query_one(TabbedContent)
         tabs.active = "launcher-tab" if tabs.active == "autostart-tab" else "autostart-tab"
+        self._active_table().focus()
+        self._update_preview()
 
     def action_down(self) -> None:
         self._active_table().action_cursor_down()
@@ -404,6 +422,17 @@ class AutostartApp(App):
         t = self._active_table()
         if t.row_count:
             t.move_cursor(row=t.row_count - 1)
+
+    def action_page_up(self) -> None:
+        self._active_table().action_page_up()
+
+    def action_page_down(self) -> None:
+        self._active_table().action_page_down()
+
+    # --- events ---
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._update_preview()
 
     # --- helpers ---
 
@@ -428,17 +457,41 @@ class AutostartApp(App):
     def _refresh_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
         for col_idx, value in enumerate(_row_cells(entry)):
             table.update_cell_at((row_idx, col_idx), value)
+        self._update_preview()
+
+    def _current_entry(self) -> Entry | None:
+        kind = self._active_kind()
+        table = self.query_one(f"#{kind}-table", DataTable)
+        if not table.row_count:
+            return None
+        try:
+            row_key = table.coordinate_to_cell_key((table.cursor_row, 0)).row_key
+        except Exception:
+            return None
+        return next((e for e in self.entries[kind] if e.desktop_id == row_key.value), None)
+
+    def _update_preview(self) -> None:
+        preview = self.query_one("#exec-preview", Static)
+        entry = self._current_entry()
+        if entry is None:
+            preview.update("")
+            return
+        cmd = entry.exec_cmd or "[dim](no Exec= field)[/]"
+        path = entry.user_path or entry.system_path
+        path_str = str(path) if path else ""
+        preview.update(
+            f"[b]$[/b] {cmd}\n[dim]{path_str}[/]"
+        )
 
 
-def _row_cells(e: Entry) -> tuple[str, str, str, str]:
-    on_label = "● ON " if e.kind == "autostart" else "● SHOW"
-    off_label = "○ OFF" if e.kind == "autostart" else "○ HIDE"
+def _row_cells(e: Entry) -> tuple[str, str, str]:
+    on_label = " ● ON " if e.kind == "autostart" else " ● SHOW"
+    off_label = " ○ OFF" if e.kind == "autostart" else " ○ HIDE"
     state = (
         f"[bold green]{on_label}[/]" if e.enabled else f"[bold red]{off_label}[/]"
     )
     name = e.name if e.enabled else f"[dim]{e.name}[/]"
-    exec_cmd = e.exec_cmd if e.enabled else f"[dim]{e.exec_cmd}[/]"
-    return state, e.source, name, exec_cmd
+    return state, e.source, name
 
 
 def main() -> None:
