@@ -301,7 +301,10 @@ class DesktopFilePreview(ModalScreen[None]):
     """Modal dialog showing the raw contents of a .desktop file."""
 
     BINDINGS = [
-        Binding("escape,q,enter", "dismiss", "Close"),
+        Binding("escape", "dismiss", "Close"),
+        Binding("q", "dismiss", "Close", show=False),
+        # priority=True so we win over TextArea's own enter binding.
+        Binding("enter", "dismiss", "Close", priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -408,7 +411,9 @@ class AutostartApp(App):
 
     BINDINGS = [
         Binding("space", "toggle", "Toggle"),
-        Binding("enter", "preview", "Preview"),
+        # priority=True so we win over DataTable's own enter binding
+        # (which fires RowSelected and swallows the key).
+        Binding("enter", "preview", "Preview", priority=True),
         Binding("f", "cycle_state", "State filter"),
         Binding("s", "cycle_source", "Source filter"),
         Binding("c", "clear_filters", "Clear filters"),
