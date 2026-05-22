@@ -2225,10 +2225,10 @@ class AutostartApp(App):
         # before you press Space.
         prefix = "[bold yellow]⚠[/] " if is_critical(e) else ""
         # Cap the name column so one verbose service Description doesn't
-        # force the whole table into a horizontal scroll. 70 chars fits
+        # force the whole table into a horizontal scroll. 67 chars fits
         # most terminals; the full name is still visible in the details
         # pane on the right.
-        display_name = e.name if len(e.name) <= 70 else e.name[:69] + "…"
+        display_name = e.name if len(e.name) <= 67 else e.name[:66] + "…"
         name = (
             f"{prefix}{display_name}" if e.enabled
             else f"[dim]{prefix}{display_name}[/]"
