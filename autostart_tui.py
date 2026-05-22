@@ -1169,6 +1169,8 @@ class AutostartApp(App):
         height: 1;
         padding: 0 1;
         background: $panel;
+        color: $foreground 60%;
+        text-style: italic;
         border-bottom: solid $primary 25%;
     }
 
@@ -1239,11 +1241,9 @@ class AutostartApp(App):
                 with TabPane("󱓞  Autostart [1]", id="autostart-tab"):
                     with Vertical():
                         yield Static(
-                            "[dim italic]Apps that auto-run at login  "
-                            "[/][dim](XDG .desktop entries in ~/.config/autostart "
-                            "and /etc/xdg/autostart)[/]",
+                            "Apps that auto-run at login — XDG .desktop entries "
+                            "in ~/.config/autostart and /etc/xdg/autostart",
                             classes="tab-subtitle",
-                            markup=True,
                         )
                         yield DataTable(
                             id="autostart-table", cursor_type="row", zebra_stripes=True
@@ -1251,11 +1251,9 @@ class AutostartApp(App):
                 with TabPane("󰀻  Launcher Visibility [2]", id="launcher-tab"):
                     with Vertical():
                         yield Static(
-                            "[dim italic]Apps shown in your launcher menu  "
-                            "[/][dim](walker, rofi, fuzzel, GNOME, KDE…) — toggle "
-                            "NoDisplay[/]",
+                            "Apps shown in your launcher menu (walker, rofi, "
+                            "fuzzel, GNOME, KDE…) — toggles NoDisplay",
                             classes="tab-subtitle",
-                            markup=True,
                         )
                         yield DataTable(
                             id="launcher-table", cursor_type="row", zebra_stripes=True
