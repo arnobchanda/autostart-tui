@@ -38,6 +38,7 @@ from textual.theme import Theme
 from textual.widgets import (
     DataTable,
     Footer,
+    Input,
     Label,
     Static,
     TabbedContent,
@@ -542,6 +543,16 @@ class AutostartApp(App):
         height: auto;
     }
 
+    #search-input {
+        background: $surface;
+        border: tall $primary 50%;
+        margin: 0 0 0 0;
+    }
+
+    #search-input.-hidden {
+        display: none;
+    }
+
     TabbedContent {
         height: 1fr;
     }
@@ -584,6 +595,7 @@ class AutostartApp(App):
         Binding("space", "toggle", "Toggle"),
         Binding("z", "undo", "Undo"),
         Binding("i", "toggle_details", "Details"),
+        Binding("slash", "search", "Search"),
         # DataTable's own enter binding fires RowSelected — we listen for
         # that event (see on_data_table_row_selected) instead of binding
         # enter directly. Keeping a non-firing binding here so Footer
@@ -598,7 +610,8 @@ class AutostartApp(App):
         Binding("2", "show_tab('launcher')", "Launcher"),
         Binding("tab,right,l", "next_tab", "Next tab", show=False),
         Binding("shift+tab,left,h", "prev_tab", "Prev tab", show=False),
-        Binding("q,escape", "quit", "Quit"),
+        Binding("q", "quit", "Quit"),
+        Binding("escape", "escape", "Quit / cancel search", show=False),
         Binding("j,down", "down", "Down", show=False),
         Binding("k,up", "up", "Up", show=False),
         Binding("g,home", "top", "Top", show=False),
@@ -617,9 +630,16 @@ class AutostartApp(App):
         self._accent_color: str = "#fab387"
         # Track the most recent toggle so the user can press `z` to undo it.
         self._last_toggle_id: tuple[EntryKind, str] | None = None
+        # Live name search (case-insensitive substring). Empty = no filter.
+        self.search_query: str = ""
 
     def compose(self) -> ComposeResult:
         yield Banner()
+        yield Input(
+            placeholder="search by name (Esc to clear, Enter to confirm)",
+            id="search-input",
+            classes="-hidden",
+        )
         with Horizontal(id="main-row"):
             with TabbedContent(initial="autostart-tab", id="main-tabs"):
                 with TabPane("󱓞  Autostart [1]", id="autostart-tab"):
@@ -677,8 +697,14 @@ class AutostartApp(App):
             timeout=4.0,
         )
         # If a filter is active, the entry may have moved in/out of the view.
-        if self.state_filter == "all" and self.source_filter == "all":
-            self._refresh_row(self._active_table(), self._active_table().cursor_row, entry)
+        no_filter = (
+            self.state_filter == "all"
+            and self.source_filter == "all"
+            and not self.search_query
+        )
+        if no_filter:
+            t = self._active_table()
+            self._pulse_row(t, t.cursor_row, entry)
         else:
             self._populate(kind)
         self._refresh_banner()
@@ -697,13 +723,17 @@ class AutostartApp(App):
         (toggle_autostart if kind == "autostart" else toggle_launcher)(entry)
         self._last_toggle_id = None
         self.notify(f"Undone: {entry.name}", timeout=2.0)
-        if self.state_filter == "all" and self.source_filter == "all":
+        no_filter = (
+            self.state_filter == "all"
+            and self.source_filter == "all"
+            and not self.search_query
+        )
+        if no_filter:
             t = self.query_one(f"#{kind}-table", DataTable)
-            # row may not be at current cursor; find it
             for row_idx in range(t.row_count):
                 key = t.coordinate_to_cell_key((row_idx, 0)).row_key
                 if key.value == did:
-                    self._refresh_row(t, row_idx, entry)
+                    self._pulse_row(t, row_idx, entry)
                     break
         else:
             self._populate(kind)
@@ -713,6 +743,31 @@ class AutostartApp(App):
     def action_toggle_details(self) -> None:
         pane = self.query_one("#details-pane")
         pane.toggle_class("-hidden")
+
+    def action_search(self) -> None:
+        inp = self.query_one("#search-input", Input)
+        inp.remove_class("-hidden")
+        inp.focus()
+
+    def action_escape(self) -> None:
+        # When search input has focus: clear the filter and hide it.
+        # Otherwise behave like quit.
+        inp = self.query_one("#search-input", Input)
+        if inp.has_focus or not inp.has_class("-hidden"):
+            self._close_search(clear=True)
+        else:
+            self.exit()
+
+    def _close_search(self, clear: bool) -> None:
+        inp = self.query_one("#search-input", Input)
+        if clear:
+            inp.value = ""
+            self.search_query = ""
+            self._populate("autostart")
+            self._populate("launcher")
+            self._refresh_banner()
+        inp.add_class("-hidden")
+        self._active_table().focus()
 
     def action_preview(self) -> None:
         entry = self._current_entry()
@@ -752,6 +807,10 @@ class AutostartApp(App):
     def action_clear_filters(self) -> None:
         self.state_filter = "all"
         self.source_filter = "all"
+        self.search_query = ""
+        inp = self.query_one("#search-input", Input)
+        inp.value = ""
+        inp.add_class("-hidden")
         self._populate("autostart")
         self._populate("launcher")
         self.notify("Filters cleared", timeout=1.0)
@@ -801,6 +860,21 @@ class AutostartApp(App):
         self._update_preview()
         self._update_details()
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "search-input":
+            return
+        self.search_query = event.value
+        self._populate("autostart")
+        self._populate("launcher")
+        self._refresh_banner()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "search-input":
+            return
+        # Enter: confirm filter, hide input, return focus to the table
+        # (keep the search active so the user can navigate results).
+        self._close_search(clear=False)
+
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
     ) -> None:
@@ -839,6 +913,9 @@ class AutostartApp(App):
             rs = [e for e in rs if e.user_path is not None]
         elif self.source_filter == "system":
             rs = [e for e in rs if e.user_path is None and e.system_path is not None]
+        if self.search_query:
+            q = self.search_query.lower()
+            rs = [e for e in rs if q in e.name.lower()]
         return rs
 
     def _reload(self, kind: EntryKind) -> None:
@@ -919,6 +996,8 @@ class AutostartApp(App):
             filter_bits.append(f"state={self.state_filter}")
         if self.source_filter != "all":
             filter_bits.append(f"source={self.source_filter}")
+        if self.search_query:
+            filter_bits.append(f'name="{self.search_query}"')
         if filter_bits:
             parts.append("[bold yellow]filters:[/] " + ", ".join(filter_bits))
         self.query_one(Banner).set_stats("   [dim]│[/]   ".join(parts))
@@ -927,6 +1006,30 @@ class AutostartApp(App):
         for col_idx, value in enumerate(self._row_cells(entry)):
             table.update_cell_at((row_idx, col_idx), value)
         self._update_preview()
+
+    def _pulse_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
+        """Briefly invert the row in green/red after a toggle, then settle."""
+        flash_color = "bright_green" if entry.enabled else "bright_red"
+        for col_idx, value in enumerate(self._row_cells(entry)):
+            table.update_cell_at(
+                (row_idx, col_idx), f"[reverse bold {flash_color}]{value}[/]"
+            )
+        self._update_preview()
+        # 220 ms is short enough to feel like an animation but long enough
+        # to register as feedback that "something changed".
+        self.set_timer(0.22, lambda: self._settle_row(table, row_idx, entry))
+
+    def _settle_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
+        # Verify the row is still where we left it (no reload happened in
+        # the meantime) before writing back the normal cells.
+        if row_idx >= table.row_count:
+            return
+        try:
+            row_key = table.coordinate_to_cell_key((row_idx, 0)).row_key
+        except Exception:
+            return
+        if row_key.value == entry.desktop_id:
+            self._refresh_row(table, row_idx, entry)
 
     def _current_entry(self) -> Entry | None:
         kind = self._active_kind()
@@ -1014,8 +1117,18 @@ class AutostartApp(App):
             if e.enabled
             else f"[dim]{glyph}[/]"
         )
+        # Source colors: user = cyan (the user's own choice), system = dim
+        # (background plumbing), user+system = magenta (user overrides system).
+        source_color = {
+            "user": "cyan",
+            "system": "gray50",
+            "user+system": "magenta",
+        }.get(e.source, "white")
+        source = f"[{source_color}]{e.source}[/]"
+        if not e.enabled:
+            source = f"[dim]{source}[/]"
         name = e.name if e.enabled else f"[dim]{e.name}[/]"
-        return icon, state, e.source, name
+        return icon, state, source, name
 
 
 def main() -> None:
