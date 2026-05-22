@@ -1,248 +1,220 @@
 # autostart-tui
 
-A tiny [Textual](https://textual.textualize.io/) TUI to manage Linux
-desktop autostart and launcher entries. The Linux answer to "where's the
-equivalent of Windows Task Manager's Startup tab?" — with a bonus second
-tab for hiding apps from your launcher (walker, rofi, fuzzel, GNOME,
-KDE, etc.).
+A tiny [Textual](https://textual.textualize.io/) TUI that manages
+everything that auto-runs on your Linux desktop: XDG autostart entries,
+launcher menu visibility, and systemd `--user` services — plus a boot
+impact view so you can see what's actually slowing your login.
+
+```
++--------------------------------------------------+-------------------+
+| Autostart [1]  Visibility [2]  Services [3]  Boot|  details panel    |
++--------------------------------------------------+                   |
+|  󰍉   ● ON    user      99ms     1Password        |  Exec, override   |
+|                                                  |  diff, diagnostics|
+|  󰍉   ○ OFF   system    -        Discord          |                   |
+|  ...                                             |                   |
++--------------------------------------------------+-------------------+
+```
 
 ## Why
 
-`gnome-session-properties` is dead. `stacer` is a 100MB GUI for a 50-line
-problem. KDE's autostart KCM needs all of KDE. This is a single Python
-file, run by [`uv`](https://docs.astral.sh/uv/) with [Textual](https://textual.textualize.io/)
-for the UI — installs in seconds, no manual venv, no system-level
-packages, and follows your current Omarchy theme automatically.
+`gnome-session-properties` is dead. `stacer` is a 100MB GUI for a
+50-line problem. KDE's autostart KCM needs all of KDE. This is a single
+Python file run by [`uv`](https://docs.astral.sh/uv/) — installs in
+seconds, no manual venv, no system packages.
 
-## Four tabs
-
-### 1. Autostart
-
-Lists entries from `~/.config/autostart/` and `/etc/xdg/autostart/` and
-lets you toggle them on/off. Disabling writes:
-
-```
-Hidden=true
-X-GNOME-Autostart-enabled=false
-```
-
-System-only entries are never edited — toggling creates a user-side
-override in `~/.config/autostart/` and edits *that*. Re-enabling flips
-the keys back; the override file stays so the state is explicit and
-easy to find later.
-
-### 2. Launcher Visibility
-
-Lists `.desktop` files from the standard application directories:
-
-- `~/.local/share/applications/`
-- `/usr/share/applications/`
-- `~/.local/share/flatpak/exports/share/applications/`
-- `/var/lib/flatpak/exports/share/applications/`
-
-Toggling flips `NoDisplay=`, the freedesktop standard for hiding an
-entry from launchers. Every launcher worth using respects it (walker,
-rofi, fuzzel, GNOME menu, KDE Kicker, …).
-
-Same non-destructive rule: system files stay untouched; user-side
-overrides land in `~/.local/share/applications/`.
-
-### 3. Services
-
-User systemd units (`~/.config/systemd/user/`, `/etc/systemd/user/`,
-`/usr/lib/systemd/user/`). Toggle calls `systemctl --user enable`
-or `--user disable` — it does NOT start or stop the running unit,
-only changes whether it runs at next login.
-
-State comes from a single `systemctl --user list-unit-files` call.
-The TUI filters to units in `enabled` or `disabled` state — static,
-masked, alias, and template units (`foo@.service`) are hidden
-because they don't fit the on/off model.
-
-Editing a unit file with `e` automatically runs `daemon-reload`
-after save. Reset (`x`) is intentionally refused for unit files —
-use `systemctl --user revert <unit>` instead.
-
-### 4. Boot Impact
-
-A sorted view of autostart + service entries by their
-`systemd-analyze blame` cost in ms. The header surfaces three
-live numbers:
-
-```
-Enabled boot cost: 1089 ms   ·   Disabled saves: 200 ms   ·   4 unmatched
-```
-
-Toggling an entry off updates the totals immediately, so you can see
-the effect of a planned cleanup before reloading. Sort order is
-stable across toggles — disabling the #1 offender doesn't yank the
-row across the screen. Press `r` to re-sort.
-
-> **About overrides**: per the XDG Desktop Entry Spec, a user `.desktop`
-> file with the same name as a system one **fully shadows** the system
-> file — fields are not merged. To keep entries from silently
-> disappearing from launchers, the toggle copies the whole system entry
-> into the user override on first write, and backfills any missing keys
-> on subsequent writes. On startup, the TUI also scans for any existing
-> incomplete overrides (e.g. left behind by older versions or other
-> tools) and repairs them automatically. The override panel still only
-> shows the keys the user actually changes.
->
-> Press `x` to reset the highlighted entry to system defaults — this
-> deletes the user override file and re-reads the entry from the
-> system file.
-
-## Features
-
-- **Four tabs** covering XDG autostart, launcher-menu visibility,
-  systemd user services, and a boot-impact view (`1`/`2`/`3`/`4`,
-  arrow keys, `h`/`l`, or `Tab` to switch)
-- **Filters**: cycle by state (`f`: all → on → off) and source (`s`:
-  all → user → system); `c` clears both. Active filters surface in the
-  header subtitle.
-- **Desktop-file preview**: press `Enter` on any row to open a modal
-  showing the raw `.desktop` file with INI syntax highlighting and line
-  numbers
-- **Edit in `$EDITOR`**: press `e` to suspend the TUI and open the
-  user override in your usual editor (vim, helix, zed, …; falls
-  back to `vi`). On exit, the TUI reloads automatically and runs
-  `systemctl --user daemon-reload` for service entries.
-- **Details side-panel** (`i`) showing Exec, file paths, override
-  effect, and a parsed key-level diff against the system file
-- **Diagnostics**: when something is wrong with an entry — missing
-  `Exec` / `TryExec` binary, `OnlyShowIn` / `NotShowIn` mismatch with
-  `$XDG_CURRENT_DESKTOP`, missing required keys — the details pane
-  shows a red Diagnostics block explaining exactly why a launcher
-  would drop the entry
-- **Search** (`/`) — substring match on Name + Exec, layered on top of
-  state and source filters
-- **Undo** (`z`) — reverts the last toggle, with a short toast
-- **Bulk selection** (`v`) — vim-style visual range; pair it with
-  `/` search to "select everything matching X and toggle the lot"
-- **Profiles** (`p`) — named snapshots of the current on/off state
-  stored at `~/.config/autostart-tui/profiles.json`. Apply a profile
-  in one keystroke; the diff against current state is computed and
-  toggled as a batch. Banner shows the active profile when current
-  state matches one exactly. Use cases: "Work" hides Discord/Steam,
-  "Gaming" hides Slack, "Airplane" disables sync agents.
-- **Two-line card rows** — Name + `Exec=` stacked on one card,
-  State + Source stacked on the right, so each entry reads at a
-  glance without sideways eye-tracking
-- **Async startup**: UI paints immediately with loading spinners; the
-  ~150-file disk scan runs in a worker thread
-- **Omarchy theme integration**: reads
-  `~/.config/omarchy/current/theme/alacritty.toml` and builds a matching
-  Textual theme on each launch. `omarchy theme set <name>` and the TUI
-  tracks. Falls back to Textual's default dark theme on non-Omarchy
-  systems.
-- **Floating window** on Omarchy/Hyprland via
-  `omarchy-launch-or-focus-tui` and a matching `windowrule`
-- **Non-destructive everywhere**: system files in `/etc/xdg/autostart/`
-  and `/usr/share/applications/` are never modified. User overrides
-  always go to `~/.config/autostart/` or `~/.local/share/applications/`.
-
-## Install
+## Quick start
 
 ```bash
-# Clone wherever you keep source checkouts
 git clone https://github.com/arnobchanda/autostart-tui.git
 cd autostart-tui
 
-# Symlink so edits in the repo apply immediately
 mkdir -p ~/.local/bin ~/.local/share/applications
 ln -sf "$PWD/autostart_tui.py"      ~/.local/bin/autostart-tui
 ln -sf "$PWD/autostart-tui.desktop" ~/.local/share/applications/autostart-tui.desktop
-
 update-desktop-database ~/.local/share/applications 2>/dev/null
+
+autostart-tui
 ```
 
-Then run `autostart-tui` in a terminal, or launch **Autostart Manager**
-from your app launcher.
+The shebang is `#!/usr/bin/env -S uv run --script`, so uv reads the
+[PEP 723](https://peps.python.org/pep-0723/) inline dependencies at the
+top of the file, provisions an isolated venv on first run, and caches
+it. No `pip install`, no `pyproject.toml`.
 
-The shebang line is `#!/usr/bin/env -S uv run --script`, so [uv] picks
-up the [PEP 723] inline metadata at the top of the file
-(`requires-python = ">=3.11"`, `dependencies = ["textual>=0.86"]`),
-provisions an isolated Python and venv on first run, and caches both.
-No `pip install`, no `pyproject.toml`, no manual venv.
+## How to…
 
-[uv]: https://docs.astral.sh/uv/
-[PEP 723]: https://peps.python.org/pep-0723/
+### …disable an app that runs at every login
 
-### Floating window on Omarchy / Hyprland
+1. Press `1` for the **Autostart** tab.
+2. Use `j`/`k` (or arrows) to highlight the entry.
+3. Press `Space` to toggle.
 
-The `.desktop` Exec line runs `omarchy-launch-or-focus-tui autostart-tui`,
-which uses `xdg-terminal-exec` under the hood and sets the window's
-Wayland app-id to `org.omarchy.autostart-tui`. Copy the snippet from
-[`contrib/hyprland-windowrules.conf`](contrib/hyprland-windowrules.conf)
-into a sourced `~/.config/hypr/*.conf` and `hyprctl reload` to make the
-window float, size to 1550×900, and center on screen.
+The entry is now `Hidden=true` in your user override. The system file
+is never touched. Press `z` to undo.
 
-> **Note**: Hyprland 0.54 doesn't honour percentage values in `size`
-> rules — every working `size` rule in Omarchy's defaults uses absolute
-> pixels. Tweak the numbers for your display.
+### …hide an app from your launcher menu
 
-If you don't use Omarchy: change `Exec=` to whatever launches your
-preferred terminal with this script, e.g.
-`Exec=ghostty --gtk-single-instance=false --class=autostart-tui -e autostart-tui`
-(set `Terminal=false`), or `Exec=autostart-tui` with `Terminal=true` to
-let your launcher pick a terminal for you.
+1. Press `2` for the **Launcher Visibility** tab.
+2. Find the entry (try `/` to search).
+3. Press `Space` — `NoDisplay=true` is written to your user override.
+
+Walker, rofi, fuzzel, GNOME, KDE — every launcher worth using respects
+this flag.
+
+### …enable or disable a systemd user service
+
+1. Press `3` for the **Services** tab.
+2. Highlight the unit, press `Space`.
+
+Calls `systemctl --user enable/disable` under the hood. Note this
+changes the **persistent** state for next login — it does NOT
+start/stop the running unit.
+
+### …see what's slowing your boot
+
+1. Press `4` for the **Boot** tab.
+2. Entries are sorted by `systemd-analyze blame` cost, biggest first.
+3. The header shows: enabled cost · ms saved by what you've already
+   disabled · count of entries we couldn't match to a unit.
+4. Toggle entries off and watch the totals update live.
+
+### …find out why an entry isn't showing in your launcher
+
+Press `i` to open the details side-panel. The **Diagnostics** block
+flags any of these XDG-spec drop conditions:
+
+- Missing `Name` / `Exec` / `Type`
+- `Exec=` binary not on `$PATH`
+- `TryExec=` binary missing (spec mandates the entry be hidden)
+- `OnlyShowIn=` doesn't match `$XDG_CURRENT_DESKTOP`
+- `NotShowIn=` matches `$XDG_CURRENT_DESKTOP`
+
+### …save your current setup and switch between configs
+
+1. Get your toggles into the state you want.
+2. Press `p` to open the **Profiles** picker.
+3. Press `n`, type a name (e.g. `Work`), Enter.
+
+Later, `p` → highlight the profile → `Enter` applies it. The diff
+against current state is computed and toggled as a batch (with one
+confirmation dialog if any critical entries would be disabled).
+
+Profiles live at `~/.config/autostart-tui/profiles.json`. When the
+current state matches a profile exactly, the banner shows
+`profile: <name>`.
+
+### …toggle a bunch of entries at once
+
+1. Optionally `/electron` to filter the list.
+2. Press `v` to enter **visual mode** at the current row.
+3. `j`/`k`/`Shift+G` to extend the highlighted range.
+4. `Space` toggles everything in the range. Critical entries trigger
+   one batched confirmation.
+5. `Esc` cancels without toggling.
+
+### …edit a desktop file in your favourite editor
+
+Press `e` on any entry. The TUI suspends, opens your `$EDITOR` (falls
+back to `vi`) on the user override file. On exit, the TUI reloads. For
+service unit files, `systemctl --user daemon-reload` runs automatically
+after save.
+
+### …reset an entry to system defaults
+
+Press `x`. Deletes the user override, falls back to whatever the system
+file says. Refused on service entries — use `systemctl --user revert
+<unit>` for those.
+
+### …undo a mistake
+
+`z` reverts the last toggle. Single-step only — for bulk toggles or
+profile applies, use a profile to get back to a known good state.
+
+## Tabs
+
+| Tab | Covers | Toggle changes |
+|-----|--------|---------------|
+| **1 Autostart** | `~/.config/autostart/` + `/etc/xdg/autostart/` | `Hidden=` / `X-GNOME-Autostart-enabled=` in your user override |
+| **2 Launcher Visibility** | `~/.local/share/applications/` + `/usr/share/applications/` + flatpak exports | `NoDisplay=` in your user override |
+| **3 Services** | `~/.config/systemd/user/` + `/etc/systemd/user/` + `/usr/lib/systemd/user/` | Shells out to `systemctl --user enable/disable` |
+| **4 Boot** | Live view of tabs 1+3 with `systemd-analyze blame` cost | Inherits the toggle behaviour of the underlying kind |
+
+System files are never modified — every change lands in your user
+directory.
 
 ## Keybindings
 
 | Key | Action |
 |-----|--------|
-| `↑` / `k` | Move up |
-| `↓` / `j` | Move down |
-| `g` / `Home` | Jump to top |
-| `Shift+G` / `End` | Jump to bottom |
-| `PgUp` / `PgDn` | Page up / down |
 | `Space` | Toggle the highlighted entry |
-| `z` | Undo the last toggle |
+| `z` | Undo the last single toggle |
+| `v` | Visual mode (range select); `Space` toggles all selected |
+| `p` | Profile picker (Enter apply, `n` save, `d` delete) |
 | `i` | Show / hide the details side-panel |
-| `/` | Focus the search box (substring match on Name + Exec) |
-| `e` | Open the user override in `$EDITOR` (falls back to `vi`); reload + daemon-reload on exit |
-| `x` | Reset to system defaults — delete the user override for this entry |
-| `v` | Enter visual mode — `j`/`k` to extend, `space` toggles all selected, `Esc` cancels |
-| `p` | Open profile picker — `Enter` apply, `n` save current state, `d` delete |
-| `Enter` | Open `.desktop` file preview (Esc/q/Enter to close) |
+| `e` | Edit the user override in `$EDITOR` (falls back to `vi`) |
+| `x` | Reset to system defaults (delete user override) |
+| `Enter` | Preview the raw `.desktop` / unit file |
+| `/` | Search (substring on Name) |
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |
-| `c` | Clear both filters |
-| `1` / `2` / `3` / `4` | Jump to Autostart / Launcher Visibility / Services / Boot tab |
-| `Tab` / `→` / `l` | Next tab |
-| `Shift+Tab` / `←` / `h` | Previous tab |
+| `c` | Clear all filters |
+| `1` / `2` / `3` / `4` | Jump to a tab |
+| `Tab` / `→` / `l`, `Shift+Tab` / `←` / `h` | Next / previous tab |
+| `↑`/`k`, `↓`/`j`, `g`/`Home`, `Shift+G`/`End`, `PgUp`/`PgDn` | Navigation |
 | `r` | Reload from disk |
-| `Ctrl+P` | Open Textual's command palette |
-| `q` / `Esc` | Quit |
-| _click_ | Move cursor (mouse supported via Textual) |
+| `Ctrl+P` | Textual command palette |
+| `q` / `Esc` | Quit (or cancel current action) |
 
-## Architecture
+## How it works under the hood
 
-Single Python file with three concerns:
+### XDG override shadowing (important)
 
-| Concern | Where |
-|---------|-------|
-| Reading + parsing `.desktop` files | `discover_autostart()` / `discover_launcher()` |
-| Writing non-destructive toggles | `toggle_autostart()` / `toggle_launcher()` |
-| TUI shell, filters, preview, theme | `AutostartApp(App)` |
+When the same `.desktop` filename exists in both
+`~/.local/share/applications/` and `/usr/share/applications/`, the
+**user file fully shadows the system file** per the spec — fields are
+not merged. A stub override with only `Hidden=false` will silently
+disappear from launchers because it has no `Name`/`Exec`/`Type`.
 
-State is plain dataclasses (`Entry`). The TUI keeps an in-memory
-`dict[EntryKind, list[Entry]]` and refreshes the visible `DataTable`
-from that list (filtered) after every action. Disk is only re-read on
-explicit `r` reload.
+To prevent this:
 
-The Omarchy theme loader reads the alacritty palette via stdlib
-`tomllib` and registers a Textual `Theme` — that's why we require
-Python 3.11+.
+- Every override write copies the full system entry first, then flips
+  the relevant keys.
+- On startup, any pre-existing incomplete overrides are self-healed
+  (missing keys backfilled from the system file).
+- The override diff in the details pane shows only the keys *you*
+  changed, not the full file.
 
-## Scope
+### Architecture
 
-- Covers: XDG desktop-file autostart, launcher visibility (everything
-  with a `.desktop` file), and systemd `--user` services (enabled +
-  disabled state).
-- Does **not** cover: system-level systemd units (`systemctl enable`
-  without `--user`), Hyprland `exec-once`, shell rc files, cron
-  `@reboot`. Those have their own management tools.
+Single Python file. Top half = pure functions (discovery + parsing +
+writing). Bottom half = the Textual `App`. State is plain dataclasses
+(`Entry`, `Profile`); disk is only re-read on explicit `r`. The Omarchy
+theme loader uses `tomllib` (which is why Python ≥3.11).
+
+### Scope
+
+- **Covers**: XDG autostart, XDG launcher visibility, systemd `--user`
+  services (enabled + disabled state).
+- **Doesn't cover**: system-level systemd units, Hyprland `exec-once`,
+  shell rc files, cron `@reboot`, static/masked/template units. Those
+  have their own tools.
+
+## Floating window on Omarchy / Hyprland
+
+The `.desktop` Exec runs `omarchy-launch-or-focus-tui autostart-tui`,
+which sets the Wayland app-id to `org.omarchy.autostart-tui`. Copy the
+snippet from
+[`contrib/hyprland-windowrules.conf`](contrib/hyprland-windowrules.conf)
+into a sourced `~/.config/hypr/*.conf` and `hyprctl reload`.
+
+> Hyprland 0.54 doesn't honour percentage values in `size` rules — use
+> absolute pixels.
+
+Not on Omarchy? Edit the `.desktop` `Exec=` line to whatever launches
+your terminal, e.g.
+`Exec=ghostty --gtk-single-instance=false --class=autostart-tui -e autostart-tui`
+(set `Terminal=false`).
 
 ## License
 
