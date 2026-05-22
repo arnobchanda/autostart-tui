@@ -23,7 +23,9 @@ loaded into a Textual theme so the TUI tracks `omarchy theme set ...`.
 from __future__ import annotations
 
 import configparser
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import tomllib
@@ -596,6 +598,134 @@ def render_override_diff(entry: Entry) -> str:
     if not out:
         out.append("[dim italic]override matches system exactly[/]")
     return "\n".join(out)
+
+
+# ---------- Diagnostics ----------
+
+# Severity vocabulary kept tiny on purpose:
+#   error   = launcher will drop / refuse to activate the entry
+#   warning = entry will appear but may misbehave (reserved for future use)
+DiagSeverity = Literal["error", "warning"]
+
+
+@dataclass
+class Diagnostic:
+    severity: DiagSeverity
+    code: str         # stable short id, useful for tests & later filtering
+    message: str      # human-readable, shown verbatim in the details pane
+
+
+def _effective_desktop(entry: Entry) -> configparser.RawConfigParser | None:
+    """Return the parsed .desktop file that launchers will actually
+    read for this entry. Per XDG shadowing rules that's the user file
+    when present, else the system file — never a merge."""
+    path = entry.user_path or entry.system_path
+    if path is None:
+        return None
+    return _read_desktop(path)
+
+
+def _exec_first_token(exec_value: str) -> str | None:
+    """First token of Exec= — the program launchers will run. Uses
+    shlex which handles quoted args; the XDG Exec spec has more edge
+    cases (%f / %U expansion, double-escaped %), but those all come
+    *after* the binary, so shlex is good enough for "does this binary
+    exist" checks."""
+    try:
+        tokens = shlex.split(exec_value)
+    except ValueError:
+        return None
+    return tokens[0] if tokens else None
+
+
+def _binary_exists(token: str) -> bool:
+    if not token:
+        return False
+    if "/" in token:
+        # Absolute or relative path — XDG specifies absolute, but
+        # accept either; the launcher will resolve it the same way.
+        return Path(token).is_file()
+    return shutil.which(token) is not None
+
+
+def _xdg_current_desktops() -> set[str]:
+    """$XDG_CURRENT_DESKTOP is colon-separated per the spec."""
+    raw = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    return {d.strip() for d in raw.split(":") if d.strip()}
+
+
+def _split_show_in(value: str) -> set[str]:
+    """OnlyShowIn / NotShowIn are semicolon-separated lists."""
+    return {s.strip() for s in value.split(";") if s.strip()}
+
+
+def diagnose(entry: Entry) -> list[Diagnostic]:
+    """Return reasons launchers may drop or refuse to activate the
+    entry. Empty list = nothing to flag. Pure function — no I/O beyond
+    `_read_desktop` and `shutil.which`, so it's cheap to call on every
+    selection change."""
+    out: list[Diagnostic] = []
+    cp = _effective_desktop(entry)
+    if cp is None:
+        return out
+    de = cp["Desktop Entry"]
+
+    # Required keys per XDG Desktop Entry Spec §3. Post-shadowing-fix
+    # this should never fire on a TUI-managed override, but keep the
+    # check as defense in depth — third-party tools may still write
+    # incomplete user files.
+    for k in ("Type", "Name", "Exec"):
+        if not de.get(k, "").strip():
+            out.append(Diagnostic(
+                "error",
+                f"missing-{k.lower()}",
+                f"Missing required key: {k}",
+            ))
+
+    # Exec binary must resolve. Launchers vary in behaviour — some hide
+    # the entry, others show it but fail on click — either way it's a
+    # broken entry from the user's perspective.
+    exec_val = de.get("Exec", "").strip()
+    if exec_val:
+        tok = _exec_first_token(exec_val)
+        if tok and not _binary_exists(tok):
+            out.append(Diagnostic(
+                "error",
+                "exec-missing",
+                f"Exec target not found on $PATH: {tok}",
+            ))
+
+    # TryExec: per spec §5, if set and the binary doesn't exist the
+    # entry MUST be ignored. This is explicit launcher-drops behaviour.
+    try_exec = de.get("TryExec", "").strip()
+    if try_exec and not _binary_exists(try_exec):
+        out.append(Diagnostic(
+            "error",
+            "tryexec-missing",
+            f"TryExec target not found: {try_exec} (entry is hidden by spec)",
+        ))
+
+    # OnlyShowIn / NotShowIn against $XDG_CURRENT_DESKTOP.
+    current = _xdg_current_desktops()
+    only = _split_show_in(de.get("OnlyShowIn", ""))
+    if only and not (only & current):
+        listed = ";".join(sorted(only))
+        env = ":".join(sorted(current)) or "(unset)"
+        out.append(Diagnostic(
+            "error",
+            "onlyshowin-mismatch",
+            f"OnlyShowIn={listed} doesn't include current desktop ({env})",
+        ))
+    not_show = _split_show_in(de.get("NotShowIn", ""))
+    overlap = not_show & current
+    if overlap:
+        out.append(Diagnostic(
+            "error",
+            "notshowin-match",
+            f"NotShowIn matches current desktop: {';'.join(sorted(overlap))}",
+        ))
+
+    return out
 
 
 # ---------- Glyph mapping ----------
