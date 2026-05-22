@@ -1151,9 +1151,7 @@ class AutostartApp(App):
     }
 
     #exec-preview {
-        height: auto;
-        min-height: 2;
-        max-height: 4;
+        height: 1;
         padding: 0 1;
         background: $panel;
         color: $accent;
@@ -1843,11 +1841,7 @@ class AutostartApp(App):
             preview.update("")
             return
         cmd = entry.exec_cmd or "[dim](no Exec= field)[/]"
-        path = entry.user_path or entry.system_path
-        path_str = str(path) if path else ""
-        preview.update(
-            f"[b]$[/b] {cmd}\n[dim]{path_str}[/]"
-        )
+        preview.update(f"[b]$[/b] {cmd}")
 
     def _update_details(self) -> None:
         widget = self.query_one("#details-content", Static)
