@@ -1362,6 +1362,7 @@ class AutostartApp(App):
         Binding("slash", "search", "Search"),
         Binding("e", "edit", "Edit file"),
         Binding("x", "reset_to_system", "Reset"),
+        Binding("v", "visual", "Select"),
         # DataTable's own enter binding fires RowSelected — we listen for
         # that event (see on_data_table_row_selected) instead of binding
         # enter directly. Keeping a non-firing binding here so Footer
@@ -1402,6 +1403,11 @@ class AutostartApp(App):
         self._last_toggle_id: tuple[EntryKind, str] | None = None
         # Live name search (case-insensitive substring). Empty = no filter.
         self.search_query: str = ""
+        # Visual-mode (range selection) state. When `_visual_anchor` is
+        # not None, j/k extend a contiguous selection between the anchor
+        # and the current cursor row. `space` then toggles every entry
+        # in that range as a single batch.
+        self._visual_anchor: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Banner()
@@ -1610,6 +1616,76 @@ class AutostartApp(App):
         pane = self.query_one("#details-pane")
         pane.toggle_class("-hidden")
 
+    def action_visual(self) -> None:
+        """Toggle vim-style visual mode for range selection. Anchor is
+        the cursor row at entry; j/k extend; space toggles every entry
+        in the range as a batch."""
+        if self._visual_anchor is not None:
+            self._exit_visual()
+            return
+        t = self._active_table()
+        if not t.row_count:
+            return
+        self._visual_anchor = t.cursor_row
+        self._refresh_visual_rows()
+        self._refresh_banner()
+
+    def _exit_visual(self) -> None:
+        """Leave visual mode and clear any selection styling. Safe to
+        call from anywhere — no-ops when not in visual mode."""
+        if self._visual_anchor is None:
+            return
+        self._visual_anchor = None
+        # Re-render the active table to drop the reverse styling.
+        self._populate(self._active_kind())
+        self._refresh_banner()
+
+    def _visual_range(self) -> tuple[int, int] | None:
+        """(low, high) inclusive row indices in the active table, or
+        None if not in visual mode."""
+        if self._visual_anchor is None:
+            return None
+        t = self._active_table()
+        if not t.row_count:
+            return None
+        a = self._visual_anchor
+        c = t.cursor_row
+        return (min(a, c), max(a, c))
+
+    def _refresh_visual_rows(self) -> None:
+        """Re-render the active table's rows so the highlighted range
+        gets the reverse style. Cheap — only touches the active table."""
+        rng = self._visual_range()
+        if rng is None:
+            return
+        low, high = rng
+        t = self._active_table()
+        for row_idx in range(t.row_count):
+            try:
+                key = t.coordinate_to_cell_key((row_idx, 0)).row_key
+            except Exception:
+                continue
+            entry = self._entry_by_id(key.value)
+            if entry is None:
+                continue
+            cells = self._row_cells(entry)
+            if low <= row_idx <= high:
+                cells = tuple(f"[reverse]{c}[/]" for c in cells)
+            for col_idx, value in enumerate(cells):
+                t.update_cell_at((row_idx, col_idx), value)
+
+    def _entry_by_id(self, desktop_id: str | None) -> Entry | None:
+        """Find an entry across all pools by desktop_id. Used by
+        visual-mode rendering since the active table can carry rows
+        from multiple kinds on the Boot tab."""
+        if desktop_id is None:
+            return None
+        for pool in self.entries.values():
+            for e in pool:
+                if e.desktop_id == desktop_id:
+                    return e
+        return None
+
     def action_edit(self) -> None:
         entry = self._current_entry()
         if entry is None:
@@ -1654,10 +1730,13 @@ class AutostartApp(App):
 
     def action_escape(self) -> None:
         # When search input has focus: clear the filter and hide it.
+        # In visual mode: cancel selection.
         # Otherwise behave like quit.
         inp = self.query_one("#search-input", Input)
         if inp.has_focus or not inp.has_class("-hidden"):
             self._close_search(clear=True)
+        elif self._visual_anchor is not None:
+            self._exit_visual()
         else:
             self.exit()
 
@@ -1766,6 +1845,9 @@ class AutostartApp(App):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._update_preview()
         self._update_details()
+        if self._visual_anchor is not None:
+            self._refresh_visual_rows()
+            self._refresh_banner()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "search-input":
@@ -1787,6 +1869,10 @@ class AutostartApp(App):
         # Fires on mouse clicks AND keyboard switches, so it catches what
         # the action_* keybindings can't (clicking a tab header with the
         # mouse never triggers action_show_tab).
+        # Switching tabs invalidates any active selection — anchor row
+        # indexes don't translate across tables.
+        if self._visual_anchor is not None:
+            self._visual_anchor = None
         self._active_table().focus()
         self._update_preview()
         self._update_details()
@@ -2039,6 +2125,14 @@ class AutostartApp(App):
             filter_bits.append(f'name="{self.search_query}"')
         if filter_bits:
             parts.append("[bold yellow]filters:[/] " + ", ".join(filter_bits))
+        rng = self._visual_range()
+        if rng is not None:
+            low, high = rng
+            n = high - low + 1
+            parts.append(
+                f"[reverse bold]VISUAL[/] [bold]{n} selected[/] "
+                "[dim](space toggles all, Esc cancels)[/]"
+            )
         self.query_one(Banner).set_stats("   [dim]│[/]   ".join(parts))
 
     def _refresh_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
