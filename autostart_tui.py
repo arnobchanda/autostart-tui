@@ -1823,8 +1823,11 @@ class AutostartApp(App):
             self._refresh_row(table, row_idx, entry)
 
     def _current_entry(self) -> Entry | None:
+        # Must use the *active* table widget, not f"#{kind}-table" — the
+        # Boot tab maps to kind="autostart" but its cursor lives on the
+        # boot-table widget, not the autostart-table widget.
         kind = self._active_kind()
-        table = self.query_one(f"#{kind}-table", DataTable)
+        table = self._active_table()
         if not table.row_count:
             return None
         try:
