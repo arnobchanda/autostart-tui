@@ -38,7 +38,6 @@ from textual.theme import Theme
 from textual.widgets import (
     DataTable,
     Footer,
-    Header,
     Label,
     Static,
     TabbedContent,
@@ -75,6 +74,7 @@ class Entry:
     desktop_id: str
     name: str
     exec_cmd: str
+    icon_name: str  # freedesktop Icon= field, used to pick a glyph
     user_path: Path | None
     system_path: Path | None
     enabled: bool  # for launcher entries: "visible in launcher"
@@ -137,12 +137,14 @@ def _merge_user_over_system(
         existing.enabled = enabled
         existing.name = de.get("Name", existing.name).strip() or existing.name
         existing.exec_cmd = de.get("Exec", existing.exec_cmd).strip()
+        existing.icon_name = de.get("Icon", existing.icon_name).strip() or existing.icon_name
     else:
         by_id[did] = Entry(
             kind=kind,
             desktop_id=did,
             name=de.get("Name", did).strip() or did,
             exec_cmd=de.get("Exec", "").strip(),
+            icon_name=de.get("Icon", "").strip(),
             user_path=p,
             system_path=None,
             enabled=enabled,
@@ -163,6 +165,7 @@ def discover_autostart() -> list[Entry]:
                 desktop_id=did,
                 name=de.get("Name", did).strip() or did,
                 exec_cmd=de.get("Exec", "").strip(),
+                icon_name=de.get("Icon", "").strip(),
                 user_path=None,
                 system_path=p,
                 enabled=_autostart_enabled(cp),
@@ -195,6 +198,7 @@ def discover_launcher() -> list[Entry]:
                 desktop_id=did,
                 name=de.get("Name", did).strip() or did,
                 exec_cmd=de.get("Exec", "").strip(),
+                icon_name=de.get("Icon", "").strip(),
                 user_path=None,
                 system_path=p,
                 enabled=_launcher_visible(cp),
@@ -285,7 +289,133 @@ def load_omarchy_theme() -> Theme | None:
     )
 
 
+# ---------- Glyph mapping ----------
+
+# Substring → nerd-font glyph. Checked against the freedesktop Icon= value,
+# longest substring first so brand-specific keys win over generic categories.
+ICON_GLYPH_MAP: list[tuple[str, str]] = [
+    # Specific brands / known icon names
+    ("preferences-desktop-startup", "󱓞"),
+    ("multimedia-volume-control", "󰕾"),
+    ("system-software-update", "󰚰"),
+    ("system-file-manager", "󰉋"),
+    ("accessories-text-editor", "󰷈"),
+    ("input-keyboard", "󰌌"),
+    ("input-method", "󰌌"),
+    ("gnome-disks", "󰋊"),
+    ("disk-utility", "󰋊"),
+    ("snapper", "󰋊"),
+    ("at-spi", "󰠾"),
+    ("geoclue", "󰍎"),
+    ("keyring", "󰌾"),
+    ("password", "󰌾"),
+    ("1password", "󰢁"),
+    ("nextcloud", "󰒖"),
+    ("remmina", "󰢹"),
+    ("walker", ""),
+    ("fcitx", "󰌌"),
+    ("spotify", "󰓇"),
+    ("discord", "󰙯"),
+    ("slack", "󰒱"),
+    ("github", "󰊤"),
+    ("firefox", ""),
+    ("chrome", ""),
+    ("chromium", ""),
+    ("brave", ""),
+    ("vscode", "󰨞"),
+    ("obsidian", "󱓧"),
+    ("notion", "󰇈"),
+    ("docker", ""),
+    ("limine", "󰋊"),
+    ("tracker", "󰈚"),
+    ("user-dirs", "󰉋"),
+    ("ghostty", "󰊠"),
+    ("alacritty", ""),
+    ("battery", "󰂀"),
+    ("bluetooth", "󰂯"),
+    ("network", "󰖩"),
+    # Category fallbacks (freedesktop standard icon names)
+    ("file-manager", "󰉋"),
+    ("text-editor", "󰷈"),
+    ("image-viewer", "󰋩"),
+    ("media-player", "󰐊"),
+    ("web-browser", "󰖟"),
+    ("system-monitor", "󰓅"),
+    ("preferences", "󰒓"),
+    ("calculator", "󰪚"),
+    ("calendar", "󰸗"),
+    ("terminal", ""),
+    ("settings", "󰒓"),
+    ("development", "󰨞"),
+    ("internet", "󰖟"),
+    ("browser", "󰖟"),
+    ("messaging", "󰭹"),
+    ("graphics", "󰋩"),
+    ("document", "󰈙"),
+    ("office", "󰈙"),
+    ("system", "󰒓"),
+    ("audio", "󰓃"),
+    ("music", "󰝚"),
+    ("video", "󰕧"),
+    ("image", "󰋩"),
+    ("mail", "󰇮"),
+    ("chat", "󰭹"),
+    ("game", "󰊗"),
+    ("print", "󰐪"),
+    ("pdf", "󰈦"),
+    ("headset", "󰋎"),
+    ("camera", "󰄄"),
+]
+
+DEFAULT_GLYPH = "󰍹"  # monitor
+
+
+def icon_to_glyph(icon_name: str) -> str:
+    if not icon_name:
+        return DEFAULT_GLYPH
+    low = icon_name.lower()
+    for key, glyph in ICON_GLYPH_MAP:
+        if key in low:
+            return glyph
+    return DEFAULT_GLYPH
+
+
 # ---------- TUI ----------
+
+# Block-letter banner for "autostart-tui". 2 lines tall, ~50 chars wide.
+BANNER_TITLE = (
+    "▄▀█ █░█ ▀█▀ █▀█ ▄▄ █▀ ▀█▀ ▄▀█ █▀█ ▀█▀ ▄▄ ▀█▀ █░█ █\n"
+    "█▀█ █▄█ ░█░ █▄█ ░░ ▄█ ░█░ █▀█ █▀▄ ░█░ ░░ ░█░ █▄█ █"
+)
+
+
+class Banner(Vertical):
+    """Header replacement: stylized title plus a one-line stats panel."""
+
+    DEFAULT_CSS = """
+    Banner {
+        height: 4;
+        padding: 1 2 0 2;
+        background: $surface;
+    }
+    Banner > #banner-title {
+        color: $accent;
+        text-style: bold;
+        height: 2;
+    }
+    Banner > #banner-stats {
+        color: $foreground 70%;
+        height: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Static(BANNER_TITLE, id="banner-title")
+        yield Static("", id="banner-stats", markup=True)
+
+    def set_stats(self, stats: str) -> None:
+        self.query_one("#banner-stats", Static).update(stats)
+
 
 StateFilter = Literal["all", "on", "off"]
 SourceFilter = Literal["all", "user", "system"]
@@ -440,9 +570,12 @@ class AutostartApp(App):
         self.entries: dict[EntryKind, list[Entry]] = {"autostart": [], "launcher": []}
         self.state_filter: StateFilter = "all"
         self.source_filter: SourceFilter = "all"
+        # Resolved accent color used by row icons. Overridden in on_mount once
+        # the theme is registered. Default works for Catppuccin Mocha derivatives.
+        self._accent_color: str = "#fab387"
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
+        yield Banner()
         with TabbedContent(initial="autostart-tab"):
             with TabPane("Autostart [1]", id="autostart-tab"):
                 yield DataTable(id="autostart-table", cursor_type="row", zebra_stripes=True)
@@ -456,9 +589,11 @@ class AutostartApp(App):
         if theme is not None:
             self.register_theme(theme)
             self.theme = "omarchy"
+            self._accent_color = theme.accent
 
         for tid in ("#autostart-table", "#launcher-table"):
             table = self.query_one(tid, DataTable)
+            table.add_column(" ", width=3)  # icon glyph
             table.add_column("State", width=8)
             table.add_column("Source", width=14)
             table.add_column("Name")
@@ -468,6 +603,7 @@ class AutostartApp(App):
         self.query_one("#exec-preview", Static).update(
             "[dim italic]Scanning desktop entries…[/]"
         )
+        self._refresh_banner()
         self._discover_all()
 
     # --- actions ---
@@ -491,6 +627,7 @@ class AutostartApp(App):
             self._refresh_row(self._active_table(), self._active_table().cursor_row, entry)
         else:
             self._populate(kind)
+        self._refresh_banner()
 
     def action_preview(self) -> None:
         entry = self._current_entry()
@@ -518,14 +655,14 @@ class AutostartApp(App):
         self._populate(self._active_kind())
         self._populate(self._other_kind())
         self.notify(f"State filter: {self.state_filter}", timeout=1.0)
-        self._update_subtitle()
+        self._refresh_banner()
 
     def action_cycle_source(self) -> None:
         self.source_filter = SOURCE_CYCLE[self.source_filter]
         self._populate(self._active_kind())
         self._populate(self._other_kind())
         self.notify(f"Source filter: {self.source_filter}", timeout=1.0)
-        self._update_subtitle()
+        self._refresh_banner()
 
     def action_clear_filters(self) -> None:
         self.state_filter = "all"
@@ -533,7 +670,7 @@ class AutostartApp(App):
         self._populate("autostart")
         self._populate("launcher")
         self.notify("Filters cleared", timeout=1.0)
-        self._update_subtitle()
+        self._refresh_banner()
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = f"{tab_id}-tab"
@@ -629,6 +766,7 @@ class AutostartApp(App):
             self._populate(kind)
             table.loading = False
         self._update_preview()
+        self._refresh_banner()
 
     def _populate(self, kind: EntryKind) -> None:
         """Refresh the table view from the in-memory entries + current filters."""
@@ -636,20 +774,38 @@ class AutostartApp(App):
         cursor_row = table.cursor_row if table.row_count else 0
         table.clear()
         for e in self._filtered(kind):
-            table.add_row(*_row_cells(e), key=e.desktop_id)
+            table.add_row(*self._row_cells(e), key=e.desktop_id)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
 
-    def _update_subtitle(self) -> None:
-        bits: list[str] = []
+    def _refresh_banner(self) -> None:
+        """Rewrite the banner stats line: counts + active filters."""
+        a = self.entries["autostart"]
+        l_ = self.entries["launcher"]
+        a_on = sum(1 for e in a if e.enabled)
+        l_vis = sum(1 for e in l_ if e.enabled)
+        parts: list[str] = []
+        if a:
+            parts.append(
+                f"[bold]Autostart[/]  {a_on} on  [dim]·[/]  {len(a) - a_on} off"
+            )
+        if l_:
+            parts.append(
+                f"[bold]Launcher[/]  {l_vis} visible  [dim]·[/]  {len(l_) - l_vis} hidden"
+            )
+        if not parts:
+            parts.append("[dim italic]loading…[/]")
+        filter_bits: list[str] = []
         if self.state_filter != "all":
-            bits.append(f"state={self.state_filter}")
+            filter_bits.append(f"state={self.state_filter}")
         if self.source_filter != "all":
-            bits.append(f"source={self.source_filter}")
-        self.sub_title = "filters: " + ", ".join(bits) if bits else "autostart + launcher manager"
+            filter_bits.append(f"source={self.source_filter}")
+        if filter_bits:
+            parts.append("[bold yellow]filters:[/] " + ", ".join(filter_bits))
+        self.query_one(Banner).set_stats("   [dim]│[/]   ".join(parts))
 
     def _refresh_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
-        for col_idx, value in enumerate(_row_cells(entry)):
+        for col_idx, value in enumerate(self._row_cells(entry)):
             table.update_cell_at((row_idx, col_idx), value)
         self._update_preview()
 
@@ -678,14 +834,20 @@ class AutostartApp(App):
         )
 
 
-def _row_cells(e: Entry) -> tuple[str, str, str]:
-    on_label = " ● ON " if e.kind == "autostart" else " ● SHOW"
-    off_label = " ○ OFF" if e.kind == "autostart" else " ○ HIDE"
-    state = (
-        f"[bold green]{on_label}[/]" if e.enabled else f"[bold red]{off_label}[/]"
-    )
-    name = e.name if e.enabled else f"[dim]{e.name}[/]"
-    return state, e.source, name
+    def _row_cells(self, e: Entry) -> tuple[str, str, str, str]:
+        on_label = " ● ON " if e.kind == "autostart" else " ● SHOW"
+        off_label = " ○ OFF" if e.kind == "autostart" else " ○ HIDE"
+        state = (
+            f"[bold green]{on_label}[/]" if e.enabled else f"[bold red]{off_label}[/]"
+        )
+        glyph = icon_to_glyph(e.icon_name)
+        icon = (
+            f"[bold {self._accent_color}]{glyph}[/]"
+            if e.enabled
+            else f"[dim]{glyph}[/]"
+        )
+        name = e.name if e.enabled else f"[dim]{e.name}[/]"
+        return icon, state, e.source, name
 
 
 def main() -> None:
