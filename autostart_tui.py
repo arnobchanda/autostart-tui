@@ -27,12 +27,12 @@ import shutil
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import (
@@ -66,6 +66,7 @@ THEME_FILE = Path("~/.config/omarchy/current/theme/alacritty.toml").expanduser()
 # ---------- Model ----------
 
 EntryKind = Literal["autostart", "launcher"]
+ProgressFn = Callable[[], None] | None
 
 
 @dataclass
@@ -151,11 +152,13 @@ def _merge_user_over_system(
         )
 
 
-def discover_autostart() -> list[Entry]:
+def discover_autostart(progress: ProgressFn = None) -> list[Entry]:
     by_id: dict[str, Entry] = {}
     if AUTOSTART_SYSTEM.is_dir():
         for p in sorted(AUTOSTART_SYSTEM.glob("*.desktop")):
             cp = _read_desktop(p)
+            if progress:
+                progress()
             if not cp:
                 continue
             de = cp["Desktop Entry"]
@@ -173,19 +176,23 @@ def discover_autostart() -> list[Entry]:
     if AUTOSTART_USER.is_dir():
         for p in sorted(AUTOSTART_USER.glob("*.desktop")):
             cp = _read_desktop(p)
+            if progress:
+                progress()
             if not cp:
                 continue
             _merge_user_over_system(by_id, p, cp, "autostart", _autostart_enabled(cp))
     return sorted(by_id.values(), key=lambda e: e.name.lower())
 
 
-def discover_launcher() -> list[Entry]:
+def discover_launcher(progress: ProgressFn = None) -> list[Entry]:
     by_id: dict[str, Entry] = {}
     for d in LAUNCHER_DIRS_SYSTEM:
         if not d.is_dir():
             continue
         for p in sorted(d.glob("*.desktop")):
             cp = _read_desktop(p)
+            if progress:
+                progress()
             if not cp:
                 continue
             de = cp["Desktop Entry"]
@@ -208,6 +215,8 @@ def discover_launcher() -> list[Entry]:
             continue
         for p in sorted(d.glob("*.desktop")):
             cp = _read_desktop(p)
+            if progress:
+                progress()
             if not cp:
                 continue
             de = cp["Desktop Entry"]
@@ -215,6 +224,14 @@ def discover_launcher() -> list[Entry]:
                 continue
             _merge_user_over_system(by_id, p, cp, "launcher", _launcher_visible(cp))
     return sorted(by_id.values(), key=lambda e: e.name.lower())
+
+
+def _count_desktop_files() -> int:
+    total = 0
+    for d in (AUTOSTART_SYSTEM, AUTOSTART_USER, *LAUNCHER_DIRS_SYSTEM, *LAUNCHER_DIRS_USER):
+        if d.is_dir():
+            total += sum(1 for _ in d.glob("*.desktop"))
+    return total
 
 
 def toggle_autostart(entry: Entry) -> None:
@@ -502,6 +519,29 @@ class AutostartApp(App):
         background: $background;
     }
 
+    #main-row {
+        height: 1fr;
+    }
+
+    #main-tabs {
+        width: 1fr;
+    }
+
+    #details-pane {
+        width: 50;
+        background: $surface;
+        border-left: solid $primary 40%;
+        padding: 1 2;
+    }
+
+    #details-pane.-hidden {
+        display: none;
+    }
+
+    #details-content {
+        height: auto;
+    }
+
     TabbedContent {
         height: 1fr;
     }
@@ -542,6 +582,8 @@ class AutostartApp(App):
 
     BINDINGS = [
         Binding("space", "toggle", "Toggle"),
+        Binding("z", "undo", "Undo"),
+        Binding("i", "toggle_details", "Details"),
         # DataTable's own enter binding fires RowSelected — we listen for
         # that event (see on_data_table_row_selected) instead of binding
         # enter directly. Keeping a non-firing binding here so Footer
@@ -573,14 +615,25 @@ class AutostartApp(App):
         # Resolved accent color used by row icons. Overridden in on_mount once
         # the theme is registered. Default works for Catppuccin Mocha derivatives.
         self._accent_color: str = "#fab387"
+        # Track the most recent toggle so the user can press `z` to undo it.
+        self._last_toggle_id: tuple[EntryKind, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield Banner()
-        with TabbedContent(initial="autostart-tab"):
-            with TabPane("Autostart [1]", id="autostart-tab"):
-                yield DataTable(id="autostart-table", cursor_type="row", zebra_stripes=True)
-            with TabPane("Launcher [2]", id="launcher-tab"):
-                yield DataTable(id="launcher-table", cursor_type="row", zebra_stripes=True)
+        with Horizontal(id="main-row"):
+            with TabbedContent(initial="autostart-tab", id="main-tabs"):
+                with TabPane("󱓞  Autostart [1]", id="autostart-tab"):
+                    yield DataTable(
+                        id="autostart-table", cursor_type="row", zebra_stripes=True
+                    )
+                with TabPane("󰀻  Launcher [2]", id="launcher-tab"):
+                    yield DataTable(
+                        id="launcher-table", cursor_type="row", zebra_stripes=True
+                    )
+            with VerticalScroll(id="details-pane"):
+                yield Static(
+                    "[dim italic]Loading…[/]", id="details-content", markup=True
+                )
         yield Static("", id="exec-preview", markup=True)
         yield Footer()
 
@@ -617,10 +670,11 @@ class AutostartApp(App):
         verb = "Enabled" if entry.enabled else ("Disabled" if kind == "autostart" else "Hidden")
         if kind == "launcher" and entry.enabled:
             verb = "Shown"
+        self._last_toggle_id = (kind, entry.desktop_id)
         self.notify(
-            f"{verb}: {entry.name}",
+            f"{verb}: {entry.name}  ·  press z to undo",
             severity="information" if entry.enabled else "warning",
-            timeout=2.0,
+            timeout=4.0,
         )
         # If a filter is active, the entry may have moved in/out of the view.
         if self.state_filter == "all" and self.source_filter == "all":
@@ -628,6 +682,37 @@ class AutostartApp(App):
         else:
             self._populate(kind)
         self._refresh_banner()
+        self._update_details()
+
+    def action_undo(self) -> None:
+        if self._last_toggle_id is None:
+            self.notify("Nothing to undo", severity="warning", timeout=1.0)
+            return
+        kind, did = self._last_toggle_id
+        entry = next((e for e in self.entries[kind] if e.desktop_id == did), None)
+        if entry is None:
+            self.notify("Entry no longer present", severity="warning", timeout=1.0)
+            self._last_toggle_id = None
+            return
+        (toggle_autostart if kind == "autostart" else toggle_launcher)(entry)
+        self._last_toggle_id = None
+        self.notify(f"Undone: {entry.name}", timeout=2.0)
+        if self.state_filter == "all" and self.source_filter == "all":
+            t = self.query_one(f"#{kind}-table", DataTable)
+            # row may not be at current cursor; find it
+            for row_idx in range(t.row_count):
+                key = t.coordinate_to_cell_key((row_idx, 0)).row_key
+                if key.value == did:
+                    self._refresh_row(t, row_idx, entry)
+                    break
+        else:
+            self._populate(kind)
+        self._refresh_banner()
+        self._update_details()
+
+    def action_toggle_details(self) -> None:
+        pane = self.query_one("#details-pane")
+        pane.toggle_class("-hidden")
 
     def action_preview(self) -> None:
         entry = self._current_entry()
@@ -676,12 +761,14 @@ class AutostartApp(App):
         self.query_one(TabbedContent).active = f"{tab_id}-tab"
         self._active_table().focus()
         self._update_preview()
+        self._update_details()
 
     def action_next_tab(self) -> None:
         tabs = self.query_one(TabbedContent)
         tabs.active = "launcher-tab" if tabs.active == "autostart-tab" else "autostart-tab"
         self._active_table().focus()
         self._update_preview()
+        self._update_details()
 
     def action_prev_tab(self) -> None:
         # With only two tabs, "prev" == "next" — kept separate for clarity
@@ -712,6 +799,7 @@ class AutostartApp(App):
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._update_preview()
+        self._update_details()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         # Fires when DataTable has focus and the user presses Enter (or
@@ -751,10 +839,30 @@ class AutostartApp(App):
     @work(thread=True, exclusive=True, group="discover")
     def _discover_all(self) -> None:
         """Run both discovery passes off the main thread so the UI stays
-        responsive while we read ~150 .desktop files."""
-        autostart = discover_autostart()
-        launcher = discover_launcher()
+        responsive while we read ~150 .desktop files. Updates a counter in
+        the preview strip every few files so the user sees progress instead
+        of a generic spinner."""
+        total = max(1, _count_desktop_files())
+        scanned = [0]
+
+        def progress() -> None:
+            scanned[0] += 1
+            # Throttle UI updates: every 5 files or on the final tick.
+            if scanned[0] % 5 == 0 or scanned[0] == total:
+                self.call_from_thread(self._set_scan_progress, scanned[0], total)
+
+        autostart = discover_autostart(progress)
+        launcher = discover_launcher(progress)
         self.call_from_thread(self._on_discovery_done, autostart, launcher)
+
+    def _set_scan_progress(self, current: int, total: int) -> None:
+        bar_width = 20
+        filled = int(bar_width * current / total)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        self.query_one("#exec-preview", Static).update(
+            f"[dim italic]Scanning desktop entries…  [/]"
+            f"[{self._accent_color}]{bar}[/]  [dim]{current}/{total}[/]"
+        )
 
     def _on_discovery_done(
         self, autostart: list[Entry], launcher: list[Entry]
@@ -766,6 +874,7 @@ class AutostartApp(App):
             self._populate(kind)
             table.loading = False
         self._update_preview()
+        self._update_details()
         self._refresh_banner()
 
     def _populate(self, kind: EntryKind) -> None:
@@ -832,6 +941,55 @@ class AutostartApp(App):
         preview.update(
             f"[b]$[/b] {cmd}\n[dim]{path_str}[/]"
         )
+
+    def _update_details(self) -> None:
+        widget = self.query_one("#details-content", Static)
+        entry = self._current_entry()
+        if entry is None:
+            widget.update("[dim italic]No entry selected[/]")
+            return
+        widget.update(self._format_details(entry))
+
+    def _format_details(self, e: Entry) -> str:
+        glyph = icon_to_glyph(e.icon_name)
+        if e.kind == "autostart":
+            state = (
+                "[bold green]● ENABLED[/]" if e.enabled else "[bold red]○ DISABLED[/]"
+            )
+        else:
+            state = (
+                "[bold green]● VISIBLE[/]" if e.enabled else "[bold red]○ HIDDEN[/]"
+            )
+        # Pull Comment / Categories from whichever .desktop file we have
+        path = e.user_path or e.system_path
+        comment = ""
+        categories = ""
+        if path is not None:
+            cp = _read_desktop(path)
+            if cp is not None:
+                de = cp["Desktop Entry"]
+                comment = de.get("Comment", "").strip()
+                categories = de.get("Categories", "").strip().rstrip(";")
+        lines: list[str] = [
+            f"[bold {self._accent_color}]{glyph}  {e.name}[/]",
+            "",
+            state,
+            f"[bold]Source:[/]  {e.source}",
+        ]
+        if e.icon_name:
+            lines.append(f"[bold]Icon:[/]    [dim]{e.icon_name}[/]")
+        if comment:
+            lines += ["", "[bold]Comment[/]", comment]
+        if categories:
+            cat_pretty = " · ".join(c for c in categories.split(";") if c)
+            lines += ["", "[bold]Categories[/]", f"[dim]{cat_pretty}[/]"]
+        if e.exec_cmd:
+            lines += ["", "[bold]Exec[/]", f"[dim]{e.exec_cmd}[/]"]
+        if e.user_path:
+            lines += ["", "[bold]User file[/]", f"[dim]{e.user_path}[/]"]
+        if e.system_path:
+            lines += ["", "[bold]System file[/]", f"[dim]{e.system_path}[/]"]
+        return "\n".join(lines)
 
 
     def _row_cells(self, e: Entry) -> tuple[str, str, str, str]:
