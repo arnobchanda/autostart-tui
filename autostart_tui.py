@@ -1093,22 +1093,36 @@ class RiskConfirm(ModalScreen[bool]):
     }
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, names: list[str] | None = None) -> None:
         super().__init__()
         self._name = name
+        self._names = names or [name]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="risk-dialog"):
-            yield Label("⚠  Disable a session-critical entry?", id="risk-title")
-            yield Static(
-                f"You're about to disable [bold]{self._name}[/].\n\n"
-                "This entry looks like it's part of session plumbing "
-                "(audio, secrets, input method, portal, etc.). "
-                "Disabling it may break the next login and require "
-                "a manual fix from a TTY.",
-                id="risk-body",
-                markup=True,
-            )
+            if len(self._names) > 1:
+                title = "⚠  Disable session-critical entries?"
+                preview = ", ".join(self._names[:5])
+                if len(self._names) > 5:
+                    preview += f", … (+{len(self._names) - 5} more)"
+                body = (
+                    f"You're about to disable [bold]{len(self._names)} entries[/]: "
+                    f"{preview}.\n\n"
+                    "Some look like session plumbing (audio, secrets, input "
+                    "method, portal, etc.). Disabling them may break the next "
+                    "login and require a manual fix from a TTY."
+                )
+            else:
+                title = "⚠  Disable a session-critical entry?"
+                body = (
+                    f"You're about to disable [bold]{self._name}[/].\n\n"
+                    "This entry looks like it's part of session plumbing "
+                    "(audio, secrets, input method, portal, etc.). "
+                    "Disabling it may break the next login and require "
+                    "a manual fix from a TTY."
+                )
+            yield Label(title, id="risk-title")
+            yield Static(body, id="risk-body", markup=True)
             yield Static("[bold]y[/]  yes, disable     [bold]n[/]  cancel", id="risk-keys")
 
     def action_confirm(self) -> None:
@@ -1479,6 +1493,11 @@ class AutostartApp(App):
     # --- actions ---
 
     def action_toggle(self) -> None:
+        # In visual mode, space toggles every entry in the range as a
+        # batch rather than the single cursor row.
+        if self._visual_anchor is not None:
+            self._bulk_toggle_visual()
+            return
         entry = self._current_entry()
         if entry is None:
             return
@@ -1490,6 +1509,76 @@ class AutostartApp(App):
             self.push_screen(RiskConfirm(entry.name), on_confirm)
             return
         self._apply_toggle(entry)
+
+    def _bulk_toggle_visual(self) -> None:
+        """Toggle every entry in the active table's visual range.
+        Critical entries that would be disabled trigger a single batched
+        confirmation dialog covering the whole selection."""
+        rng = self._visual_range()
+        if rng is None:
+            return
+        low, high = rng
+        t = self._active_table()
+        entries: list[Entry] = []
+        for row_idx in range(low, high + 1):
+            try:
+                key = t.coordinate_to_cell_key((row_idx, 0)).row_key
+            except Exception:
+                continue
+            e = self._entry_by_id(key.value)
+            if e is not None:
+                entries.append(e)
+        if not entries:
+            self._exit_visual()
+            return
+        critical_disabling = [e for e in entries if e.enabled and is_critical(e)]
+        if critical_disabling:
+            names = [e.name for e in critical_disabling]
+            def on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._apply_bulk_toggle(entries)
+                else:
+                    self._exit_visual()
+            self.push_screen(RiskConfirm(names[0], names=names), on_confirm)
+            return
+        self._apply_bulk_toggle(entries)
+
+    def _apply_bulk_toggle(self, entries: list[Entry]) -> None:
+        """Run _TOGGLE_FN over each entry in the batch, then re-render
+        the affected tables once at the end. Skips individual undo
+        tracking — Undo with z only covers single toggles, not batches."""
+        succeeded = 0
+        failed: list[tuple[str, str]] = []
+        kinds_touched: set[EntryKind] = set()
+        for e in entries:
+            try:
+                _TOGGLE_FN[e.kind](e)
+            except (OSError, RuntimeError) as exc:
+                failed.append((e.name, str(exc)))
+                continue
+            succeeded += 1
+            kinds_touched.add(e.kind)
+        # Clear single-toggle undo since the batch isn't reversible
+        # with one z press.
+        self._last_toggle_id = None
+        # Refresh every kind that was touched, plus boot summary.
+        self._exit_visual()  # also re-populates the active kind
+        for kind in kinds_touched:
+            self._populate(kind)
+        if kinds_touched & {"autostart", "service"}:
+            self._refresh_boot_summary()
+        self._refresh_banner()
+        self._update_details()
+        if failed:
+            self.notify(
+                f"Toggled {succeeded}, {len(failed)} failed "
+                f"(first: {failed[0][0]} — {failed[0][1]})",
+                severity="error", timeout=6.0,
+            )
+        else:
+            self.notify(
+                f"Toggled {succeeded} entries", timeout=3.0,
+            )
 
     def _apply_toggle(self, entry: Entry) -> None:
         kind = entry.kind
