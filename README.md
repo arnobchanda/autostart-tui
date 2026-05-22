@@ -14,7 +14,7 @@ file, run by [`uv`](https://docs.astral.sh/uv/) with [Textual](https://textual.t
 for the UI — installs in seconds, no manual venv, no system-level
 packages, and follows your current Omarchy theme automatically.
 
-## Three tabs
+## Four tabs
 
 ### 1. Autostart
 
@@ -47,10 +47,27 @@ rofi, fuzzel, GNOME menu, KDE Kicker, …).
 Same non-destructive rule: system files stay untouched; user-side
 overrides land in `~/.local/share/applications/`.
 
-### 3. Boot Impact
+### 3. Services
 
-A sorted view of autostart entries by their `systemd-analyze blame`
-cost in ms. The header surfaces three live numbers:
+User systemd units (`~/.config/systemd/user/`, `/etc/systemd/user/`,
+`/usr/lib/systemd/user/`). Toggle calls `systemctl --user enable`
+or `--user disable` — it does NOT start or stop the running unit,
+only changes whether it runs at next login.
+
+State comes from a single `systemctl --user list-unit-files` call.
+The TUI filters to units in `enabled` or `disabled` state — static,
+masked, alias, and template units (`foo@.service`) are hidden
+because they don't fit the on/off model.
+
+Editing a unit file with `e` automatically runs `daemon-reload`
+after save. Reset (`x`) is intentionally refused for unit files —
+use `systemctl --user revert <unit>` instead.
+
+### 4. Boot Impact
+
+A sorted view of autostart + service entries by their
+`systemd-analyze blame` cost in ms. The header surfaces three
+live numbers:
 
 ```
 Enabled boot cost: 1089 ms   ·   Disabled saves: 200 ms   ·   4 unmatched
@@ -77,9 +94,9 @@ row across the screen. Press `r` to re-sort.
 
 ## Features
 
-- **Three tabs** for autostart entries, launcher-menu visibility, and
-  a boot-impact view (`1`/`2`/`3`, arrow keys, `h`/`l`, or `Tab` to
-  switch)
+- **Four tabs** covering XDG autostart, launcher-menu visibility,
+  systemd user services, and a boot-impact view (`1`/`2`/`3`/`4`,
+  arrow keys, `h`/`l`, or `Tab` to switch)
 - **Filters**: cycle by state (`f`: all → on → off) and source (`s`:
   all → user → system); `c` clears both. Active filters surface in the
   header subtitle.
@@ -178,7 +195,7 @@ let your launcher pick a terminal for you.
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |
 | `c` | Clear both filters |
-| `1` / `2` / `3` | Jump to Autostart / Launcher Visibility / Boot tab |
+| `1` / `2` / `3` / `4` | Jump to Autostart / Launcher Visibility / Services / Boot tab |
 | `Tab` / `→` / `l` | Next tab |
 | `Shift+Tab` / `←` / `h` | Previous tab |
 | `r` | Reload from disk |
@@ -207,12 +224,12 @@ Python 3.11+.
 
 ## Scope
 
-- Covers: XDG desktop-file autostart (most user apps incl. Remmina,
-  Nextcloud, 1Password, fcitx, walker) and launcher visibility
-  (everything with a `.desktop` file).
-- Does **not** cover: systemd user units, Hyprland `exec-once`, shell
-  rc files, cron `@reboot`. Those have their own management tools
-  (`systemctl --user`, edit the conf, edit the file).
+- Covers: XDG desktop-file autostart, launcher visibility (everything
+  with a `.desktop` file), and systemd `--user` services (enabled +
+  disabled state).
+- Does **not** cover: system-level systemd units (`systemctl enable`
+  without `--user`), Hyprland `exec-once`, shell rc files, cron
+  `@reboot`. Those have their own management tools.
 
 ## License
 
