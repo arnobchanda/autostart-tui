@@ -115,6 +115,8 @@ row across the screen. Press `r` to re-sort.
 - **Search** (`/`) — substring match on Name + Exec, layered on top of
   state and source filters
 - **Undo** (`z`) — reverts the last toggle, with a short toast
+- **Bulk selection** (`v`) — vim-style visual range; pair it with
+  `/` search to "select everything matching X and toggle the lot"
 - **Live details strip** under the table — the highlighted row's
   `Exec=` command and source path stay visible at all times
 - **Async startup**: UI paints immediately with loading spinners; the
@@ -191,6 +193,7 @@ let your launcher pick a terminal for you.
 | `/` | Focus the search box (substring match on Name + Exec) |
 | `e` | Open the user override in an inline editor (`Ctrl+S` save, `Esc` cancel) |
 | `x` | Reset to system defaults — delete the user override for this entry |
+| `v` | Enter visual mode — `j`/`k` to extend, `space` toggles all selected, `Esc` cancels |
 | `Enter` | Open `.desktop` file preview (Esc/q/Enter to close) |
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |
