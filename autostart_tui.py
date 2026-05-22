@@ -418,16 +418,46 @@ def match_boot_time(entry: Entry, boot: dict[str, int]) -> int | None:
 # ---------- Override file helpers ----------
 
 def ensure_user_override(entry: Entry) -> Path:
-    """Make sure entry.user_path exists, copying from system_path if not."""
-    if entry.user_path is not None:
-        return entry.user_path
-    assert entry.system_path is not None
+    """Make sure entry.user_path exists and is a complete entry.
+
+    Per the XDG Desktop Entry Spec, when the same desktop ID exists in
+    both ~/.local/share/applications/ and /usr/share/applications/, the
+    user file FULLY shadows the system file — fields are not merged. So
+    if a user override is missing Name/Exec/Type, launchers will silently
+    drop the entry. We guarantee the user file is a full copy of the
+    system file (plus whatever keys the user has already overridden) so
+    a partial override can never break the entry."""
     target_dir = AUTOSTART_USER if entry.kind == "autostart" else LAUNCHER_USER_WRITE_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{entry.desktop_id}.desktop"
-    shutil.copy2(entry.system_path, target)
-    entry.user_path = target
-    return target
+
+    if entry.user_path is None:
+        assert entry.system_path is not None
+        shutil.copy2(entry.system_path, target)
+        entry.user_path = target
+    elif entry.system_path is not None:
+        _backfill_missing_keys(entry.user_path, entry.system_path)
+
+    return entry.user_path
+
+
+def _backfill_missing_keys(user_path: Path, system_path: Path) -> None:
+    """Add any [Desktop Entry] keys present in system_path but missing
+    from user_path. Keys already set in the user file are preserved —
+    this only fills gaps so launchers see a complete entry."""
+    user_cp = _read_desktop(user_path)
+    sys_cp = _read_desktop(system_path)
+    if user_cp is None or sys_cp is None:
+        return
+    user_de = user_cp["Desktop Entry"]
+    sys_de = sys_cp["Desktop Entry"]
+    changed = False
+    for k, v in sys_de.items():
+        if k not in user_de:
+            user_de[k] = v
+            changed = True
+    if changed:
+        _write_desktop(user_path, user_cp)
 
 
 def _desktop_entry_keys(path: Path) -> dict[str, str]:
