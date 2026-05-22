@@ -1389,9 +1389,10 @@ class AutostartApp(App):
         ):
             table = self.query_one(tid, DataTable)
             table.add_column(" ", width=3)  # icon glyph
+            table.add_column("State", width=8)
+            table.add_column("Source", width=14)
             table.add_column("Boot", width=15)
-            table.add_column("Name / Exec")
-            table.add_column("State / Source", width=14)
+            table.add_column("Name")
             table.loading = True  # built-in spinner overlay
 
         self._active_table().focus()
@@ -2290,18 +2291,7 @@ class AutostartApp(App):
         return "\n".join(lines)
 
 
-    def _row_cells(self, e: Entry) -> tuple[str, str, str, str]:
-        """Build the four cells for a two-line card row.
-
-        Layout per row (height=2):
-            col 1: icon glyph (line 1 only)
-            col 2: boot bar  (line 1 only)
-            col 3: name  / dim Exec
-            col 4: state / dim source
-
-        Source folds under State on line 2 — same axis (persistent
-        identity) — so we don't need a dedicated Source column.
-        """
+    def _row_cells(self, e: Entry) -> tuple[str, str, str, str, str]:
         if e.kind == "launcher":
             on_label, off_label = " ● SHOW", " ○ HIDE"
         else:
@@ -2320,24 +2310,17 @@ class AutostartApp(App):
             "system": "gray50",
             "user+system": "magenta",
         }.get(e.source, "white")
-        # Cap both name and exec at 67 chars so a verbose Description
-        # or long Exec line doesn't force the table into horizontal
-        # scroll. Full text still visible in the details pane.
+        source = f"[{source_color}]{e.source}[/]"
+        if not e.enabled:
+            source = f"[dim]{source}[/]"
+        boot = _boot_cell(e.boot_ms)
         prefix = "[bold yellow]⚠[/] " if is_critical(e) else ""
         display_name = e.name if len(e.name) <= 67 else e.name[:66] + "…"
-        exec_disp = e.exec_cmd or "—"
-        if len(exec_disp) > 67:
-            exec_disp = exec_disp[:66] + "…"
-        if e.enabled:
-            name_line = f"{prefix}{display_name}"
-            exec_line = f"[dim]{exec_disp}[/]"
-            source_line = f"[{source_color}]{e.source}[/]"
-        else:
-            name_line = f"[dim]{prefix}{display_name}[/]"
-            exec_line = f"[dim]{exec_disp}[/]"
-            source_line = f"[dim]{e.source}[/]"
-        boot = _boot_cell(e.boot_ms)
-        return icon, boot, f"{name_line}\n{exec_line}", f"{state}\n{source_line}"
+        name = (
+            f"{prefix}{display_name}" if e.enabled
+            else f"[dim]{prefix}{display_name}[/]"
+        )
+        return icon, state, source, boot, name
 
 
 def main() -> None:
