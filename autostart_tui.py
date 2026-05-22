@@ -2042,7 +2042,7 @@ class AutostartApp(App):
         cursor_row = table.cursor_row if table.row_count else 0
         table.clear()
         for e in self._filtered(kind):
-            table.add_row(*self._row_cells(e), key=e.desktop_id, height=2)
+            table.add_row(*self._row_cells(e), key=e.desktop_id, height=3)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
         if kind in ("autostart", "service"):
@@ -2067,7 +2067,7 @@ class AutostartApp(App):
         ]
         rows.sort(key=lambda e: e.boot_ms or 0, reverse=True)
         for e in rows:
-            table.add_row(*self._row_cells(e), key=e.desktop_id, height=2)
+            table.add_row(*self._row_cells(e), key=e.desktop_id, height=3)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
         self._refresh_boot_summary()
@@ -2320,7 +2320,14 @@ class AutostartApp(App):
             f"{prefix}{display_name}" if e.enabled
             else f"[dim]{prefix}{display_name}[/]"
         )
-        return icon, state, source, boot, name
+        # Render every row at height=3 with content on the middle line
+        # (leading blank, content, trailing blank from the row-height
+        # padding) so each entry reads as a centered card rather than
+        # a top-aligned strip.
+        return (
+            f"\n{icon}", f"\n{state}", f"\n{source}",
+            f"\n{boot}", f"\n{name}",
+        )
 
 
 def main() -> None:
