@@ -10,15 +10,16 @@ KDE, etc.).
 
 `gnome-session-properties` is dead. `stacer` is a 100MB GUI for a 50-line
 problem. KDE's autostart KCM needs all of KDE. This is a single Python
-file, run by `uv` with Textual for the UI — installs in seconds, no
-manual venv, no system-level packages.
+file, run by [`uv`](https://docs.astral.sh/uv/) with [Textual](https://textual.textualize.io/)
+for the UI — installs in seconds, no manual venv, no system-level
+packages, and follows your current Omarchy theme automatically.
 
 ## Two tabs
 
 ### 1. Autostart
 
-Lists entries from `~/.config/autostart/` and `/etc/xdg/autostart/`
-and lets you toggle them on/off. Disabling sets:
+Lists entries from `~/.config/autostart/` and `/etc/xdg/autostart/` and
+lets you toggle them on/off. Disabling writes:
 
 ```
 Hidden=true
@@ -26,12 +27,14 @@ X-GNOME-Autostart-enabled=false
 ```
 
 System-only entries are never edited — toggling creates a user-side
-override in `~/.config/autostart/` instead. Re-enabling flips the keys
-back, the override file stays so you can see the state at a glance.
+override in `~/.config/autostart/` and edits *that*. Re-enabling flips
+the keys back; the override file stays so the state is explicit and
+easy to find later.
 
 ### 2. Launcher
 
 Lists `.desktop` files from the standard application directories:
+
 - `~/.local/share/applications/`
 - `/usr/share/applications/`
 - `~/.local/share/flatpak/exports/share/applications/`
@@ -42,15 +45,32 @@ entry from launchers. Every launcher worth using respects it (walker,
 rofi, fuzzel, GNOME menu, KDE Kicker, …).
 
 Same non-destructive rule: system files stay untouched; user-side
-overrides go in `~/.local/share/applications/`.
+overrides land in `~/.local/share/applications/`.
 
-## Omarchy theme integration
+## Features
 
-On startup the app reads `~/.config/omarchy/current/theme/alacritty.toml`
-and builds a matching Textual theme from its palette. Switch themes with
-`omarchy theme set <name>` and the TUI tracks on next launch. Falls back
-to Textual's default dark theme if the file isn't there (i.e. on non-
-omarchy systems).
+- **Two tabs** for autostart entries and launcher visibility (`1`/`2`,
+  arrow keys, `h`/`l`, or `Tab` to switch)
+- **Filters**: cycle by state (`f`: all → on → off) and source (`s`:
+  all → user → system); `c` clears both. Active filters surface in the
+  header subtitle.
+- **Desktop-file preview**: press `Enter` on any row to open a modal
+  showing the raw `.desktop` file with INI syntax highlighting and line
+  numbers
+- **Live details strip** under the table — the highlighted row's
+  `Exec=` command and source path stay visible at all times
+- **Async startup**: UI paints immediately with loading spinners; the
+  ~150-file disk scan runs in a worker thread
+- **Omarchy theme integration**: reads
+  `~/.config/omarchy/current/theme/alacritty.toml` and builds a matching
+  Textual theme on each launch. `omarchy theme set <name>` and the TUI
+  tracks. Falls back to Textual's default dark theme on non-Omarchy
+  systems.
+- **Floating window** on Omarchy/Hyprland via
+  `omarchy-launch-or-focus-tui` and a matching `windowrule`
+- **Non-destructive everywhere**: system files in `/etc/xdg/autostart/`
+  and `/usr/share/applications/` are never modified. User overrides
+  always go to `~/.config/autostart/` or `~/.local/share/applications/`.
 
 ## Install
 
@@ -69,7 +89,7 @@ Then run `autostart-tui` in a terminal, or launch **Autostart Manager**
 from your app launcher.
 
 The shebang line is `#!/usr/bin/env -S uv run --script`, so [uv] picks
-up the [PEP 723] inline metadata block at the top of the file
+up the [PEP 723] inline metadata at the top of the file
 (`requires-python = ">=3.11"`, `dependencies = ["textual>=0.86"]`),
 provisions an isolated Python and venv on first run, and caches both.
 No `pip install`, no `pyproject.toml`, no manual venv.
@@ -82,17 +102,21 @@ No `pip install`, no `pyproject.toml`, no manual venv.
 The `.desktop` Exec line runs `omarchy-launch-or-focus-tui autostart-tui`,
 which uses `xdg-terminal-exec` under the hood and sets the window's
 Wayland app-id to `org.omarchy.autostart-tui`. Copy the snippet from
-`contrib/hyprland-windowrules.conf` into a sourced `~/.config/hypr/*.conf`
-and `hyprctl reload` to make the window float, size to 60×70%, and
-center on screen.
+[`contrib/hyprland-windowrules.conf`](contrib/hyprland-windowrules.conf)
+into a sourced `~/.config/hypr/*.conf` and `hyprctl reload` to make the
+window float, size to 1550×900, and center on screen.
+
+> **Note**: Hyprland 0.54 doesn't honour percentage values in `size`
+> rules — every working `size` rule in Omarchy's defaults uses absolute
+> pixels. Tweak the numbers for your display.
 
 If you don't use Omarchy: change `Exec=` to whatever launches your
 preferred terminal with this script, e.g.
-`Exec=ghostty --class=autostart-tui -e autostart-tui` (set
-`Terminal=false`), or `Exec=autostart-tui` with `Terminal=true` to let
-your launcher pick.
+`Exec=ghostty --gtk-single-instance=false --class=autostart-tui -e autostart-tui`
+(set `Terminal=false`), or `Exec=autostart-tui` with `Terminal=true` to
+let your launcher pick a terminal for you.
 
-## Keys
+## Keybindings
 
 | Key | Action |
 |-----|--------|
@@ -100,13 +124,38 @@ your launcher pick.
 | `↓` / `j` | Move down |
 | `g` / `Home` | Jump to top |
 | `Shift+G` / `End` | Jump to bottom |
-| `Space` / `Enter` | Toggle entry |
-| `1` | Switch to Autostart tab |
-| `2` | Switch to Launcher tab |
-| `Tab` | Cycle tabs |
+| `PgUp` / `PgDn` | Page up / down |
+| `Space` | Toggle the highlighted entry |
+| `Enter` | Open `.desktop` file preview (Esc/q/Enter to close) |
+| `f` | Cycle state filter (all → on → off) |
+| `s` | Cycle source filter (all → user → system) |
+| `c` | Clear both filters |
+| `1` / `2` | Jump to Autostart / Launcher tab |
+| `Tab` / `→` / `l` | Next tab |
+| `Shift+Tab` / `←` / `h` | Previous tab |
 | `r` | Reload from disk |
+| `Ctrl+P` | Open Textual's command palette |
 | `q` / `Esc` | Quit |
 | _click_ | Move cursor (mouse supported via Textual) |
+
+## Architecture
+
+Single Python file (~400 lines) with three concerns:
+
+| Concern | Where |
+|---------|-------|
+| Reading + parsing `.desktop` files | `discover_autostart()` / `discover_launcher()` |
+| Writing non-destructive toggles | `toggle_autostart()` / `toggle_launcher()` |
+| TUI shell, filters, preview, theme | `AutostartApp(App)` |
+
+State is plain dataclasses (`Entry`). The TUI keeps an in-memory
+`dict[EntryKind, list[Entry]]` and refreshes the visible `DataTable`
+from that list (filtered) after every action. Disk is only re-read on
+explicit `r` reload.
+
+The Omarchy theme loader reads the alacritty palette via stdlib
+`tomllib` and registers a Textual `Theme` — that's why we require
+Python 3.11+.
 
 ## Scope
 
@@ -119,4 +168,4 @@ your launcher pick.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
