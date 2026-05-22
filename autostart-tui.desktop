@@ -2,10 +2,10 @@
 Type=Application
 Version=1.0
 Name=Autostart Manager
-GenericName=Startup Apps
-Comment=Enable or disable XDG autostart entries from a TUI
-Exec=autostart-tui
+GenericName=Startup & Launcher Apps
+Comment=Enable or disable XDG autostart entries and launcher visibility
+Exec=ghostty --class=autostart-tui --title=autostart-tui -e autostart-tui
 Icon=system-run
-Terminal=true
-Categories=System;Settings;ConsoleOnly;
-Keywords=autostart;startup;boot;login;session;xdg
+Terminal=false
+Categories=System;Settings;
+Keywords=autostart;startup;boot;login;session;launcher;walker;xdg
