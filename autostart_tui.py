@@ -1192,7 +1192,7 @@ class AutostartApp(App):
         Binding("c", "clear_filters", "Clear filters"),
         Binding("r", "reload", "Reload"),
         Binding("1", "show_tab('autostart')", "Autostart"),
-        Binding("2", "show_tab('launcher')", "Launcher"),
+        Binding("2", "show_tab('launcher')", "Visibility"),
         Binding("3", "show_tab('boot')", "Boot"),
         Binding("tab,right,l", "next_tab", "Next tab", show=False),
         Binding("shift+tab,left,h", "prev_tab", "Prev tab", show=False),
@@ -1233,7 +1233,7 @@ class AutostartApp(App):
                     yield DataTable(
                         id="autostart-table", cursor_type="row", zebra_stripes=True
                     )
-                with TabPane("󰀻  Launcher [2]", id="launcher-tab"):
+                with TabPane("󰀻  Launcher Visibility [2]", id="launcher-tab"):
                     yield DataTable(
                         id="launcher-table", cursor_type="row", zebra_stripes=True
                     )

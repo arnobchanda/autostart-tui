@@ -31,7 +31,7 @@ override in `~/.config/autostart/` and edits *that*. Re-enabling flips
 the keys back; the override file stays so the state is explicit and
 easy to find later.
 
-### 2. Launcher
+### 2. Launcher Visibility
 
 Lists `.desktop` files from the standard application directories:
 
@@ -77,8 +77,8 @@ row across the screen. Press `r` to re-sort.
 
 ## Features
 
-- **Three tabs** for autostart entries, launcher visibility, and a
-  boot-impact view (`1`/`2`/`3`, arrow keys, `h`/`l`, or `Tab` to
+- **Three tabs** for autostart entries, launcher-menu visibility, and
+  a boot-impact view (`1`/`2`/`3`, arrow keys, `h`/`l`, or `Tab` to
   switch)
 - **Filters**: cycle by state (`f`: all → on → off) and source (`s`:
   all → user → system); `c` clears both. Active filters surface in the
@@ -178,7 +178,7 @@ let your launcher pick a terminal for you.
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |
 | `c` | Clear both filters |
-| `1` / `2` / `3` | Jump to Autostart / Launcher / Boot tab |
+| `1` / `2` / `3` | Jump to Autostart / Launcher Visibility / Boot tab |
 | `Tab` / `→` / `l` | Next tab |
 | `Shift+Tab` / `←` / `h` | Previous tab |
 | `r` | Reload from disk |
