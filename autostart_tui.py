@@ -23,6 +23,7 @@ loaded into a Textual theme so the TUI tracks `omarchy theme set ...`.
 from __future__ import annotations
 
 import configparser
+import json
 import os
 import re
 import shlex
@@ -67,6 +68,10 @@ LAUNCHER_USER_WRITE_DIR = LAUNCHER_DIRS_USER[0]  # where overrides go
 
 THEME_FILE = Path("~/.config/omarchy/current/theme/alacritty.toml").expanduser()
 
+PROFILES_FILE = Path(
+    os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+).expanduser() / "autostart-tui" / "profiles.json"
+
 SYSTEMD_USER_DIRS_USER = [
     Path("~/.config/systemd/user").expanduser(),
 ]
@@ -102,6 +107,107 @@ class Entry:
         if self.user_path and self.system_path:
             return "user+system"
         return "user" if self.user_path else "system"
+
+
+# ---------- Profiles ----------
+
+@dataclass
+class Profile:
+    """A named snapshot of which entries are *disabled* per kind.
+    "Default state = enabled" is the convention; anything not listed
+    here is treated as on."""
+    name: str
+    autostart_disabled: set[str] = field(default_factory=set)
+    launcher_hidden: set[str] = field(default_factory=set)
+    service_disabled: set[str] = field(default_factory=set)
+
+    def disabled_for(self, kind: EntryKind) -> set[str]:
+        return {
+            "autostart": self.autostart_disabled,
+            "launcher": self.launcher_hidden,
+            "service": self.service_disabled,
+        }[kind]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "autostart_disabled": sorted(self.autostart_disabled),
+            "launcher_hidden": sorted(self.launcher_hidden),
+            "service_disabled": sorted(self.service_disabled),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> Profile:
+        return cls(
+            name=str(data.get("name", "Untitled")),
+            autostart_disabled=set(data.get("autostart_disabled", []) or []),
+            launcher_hidden=set(data.get("launcher_hidden", []) or []),
+            service_disabled=set(data.get("service_disabled", []) or []),
+        )
+
+
+def capture_profile(name: str, entries: dict[EntryKind, list[Entry]]) -> Profile:
+    """Snapshot the current TUI state as a Profile. We record the
+    *disabled* entries — anything missing from the lists is assumed
+    enabled, which is the conventional default."""
+    return Profile(
+        name=name,
+        autostart_disabled={e.desktop_id for e in entries["autostart"] if not e.enabled},
+        launcher_hidden={e.desktop_id for e in entries["launcher"] if not e.enabled},
+        service_disabled={e.desktop_id for e in entries["service"] if not e.enabled},
+    )
+
+
+def load_profiles() -> list[Profile]:
+    if not PROFILES_FILE.is_file():
+        return []
+    try:
+        data = json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    raw = data.get("profiles", []) if isinstance(data, dict) else []
+    out: list[Profile] = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append(Profile.from_dict(item))
+    return out
+
+
+def save_profiles(profiles: list[Profile]) -> None:
+    PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {"profiles": [p.to_dict() for p in profiles]}
+    PROFILES_FILE.write_text(
+        json.dumps(data, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def profile_matches_current(
+    profile: Profile, entries: dict[EntryKind, list[Entry]]
+) -> bool:
+    """True if the current disabled set matches the profile exactly,
+    across all three kinds."""
+    for kind in ("autostart", "launcher", "service"):
+        current = {e.desktop_id for e in entries[kind] if not e.enabled}
+        if current != profile.disabled_for(kind):
+            return False
+    return True
+
+
+def profile_diff(
+    profile: Profile, entries: dict[EntryKind, list[Entry]]
+) -> list[Entry]:
+    """Return the entries whose state needs to flip for `profile` to
+    become current. Entries listed in the profile but not present
+    (e.g. uninstalled app) are silently skipped — the caller surfaces
+    the count."""
+    targets: list[Entry] = []
+    for kind in ("autostart", "launcher", "service"):
+        disabled_target = profile.disabled_for(kind)
+        for e in entries[kind]:
+            should_be_enabled = e.desktop_id not in disabled_target
+            if e.enabled != should_be_enabled:
+                targets.append(e)
+    return targets
 
 
 def _read_desktop(path: Path) -> configparser.RawConfigParser | None:
