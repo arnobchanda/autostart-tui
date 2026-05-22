@@ -23,7 +23,6 @@ loaded into a Textual theme so the TUI tracks `omarchy theme set ...`.
 from __future__ import annotations
 
 import configparser
-import difflib
 import re
 import shutil
 import subprocess
@@ -423,26 +422,64 @@ def ensure_user_override(entry: Entry) -> Path:
     return target
 
 
+def _desktop_entry_keys(path: Path) -> dict[str, str]:
+    """Return {key: value} from a .desktop file's [Desktop Entry] section,
+    preserving case. Empty dict if the file can't be read."""
+    cp = _read_desktop(path)
+    if cp is None:
+        return {}
+    return dict(cp["Desktop Entry"].items())
+
+
+def _truncate_value(s: str, limit: int = 80) -> str:
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
 def render_override_diff(entry: Entry) -> str:
-    """Unified diff of system → user override, with +/- colorized."""
+    """Show what the user override actually changes vs the system file.
+
+    .desktop files are key=value records, not free-form text, so a line
+    diff produces a lot of noise when the override is minimal (most of
+    the system file's keys appear as "removed" even though the launcher
+    would still fall back to them). We instead diff the parsed maps and
+    surface only:
+        * keys the override modifies (red old → green new)
+        * keys the override adds (green +)
+        * a compact summary of system-only keys (not in the override)
+    """
     if entry.user_path is None or entry.system_path is None:
         return ""
-    try:
-        sys_lines = entry.system_path.read_text(errors="replace").splitlines()
-        usr_lines = entry.user_path.read_text(errors="replace").splitlines()
-    except OSError:
-        return ""
-    diff = difflib.unified_diff(sys_lines, usr_lines, lineterm="", n=1)
+    sys_keys = _desktop_entry_keys(entry.system_path)
+    usr_keys = _desktop_entry_keys(entry.user_path)
+
     out: list[str] = []
-    for raw in diff:
-        if raw.startswith("---") or raw.startswith("+++") or raw.startswith("@@"):
+
+    # Modified keys first — most relevant to "what did the override change".
+    for k in sorted(usr_keys):
+        uv = usr_keys[k]
+        sv = sys_keys.get(k)
+        if sv is None:
             continue
-        if raw.startswith("+"):
-            out.append(f"[green]{raw}[/]")
-        elif raw.startswith("-"):
-            out.append(f"[red]{raw}[/]")
-        else:
-            out.append(f"[dim]{raw}[/]")
+        if sv != uv:
+            out.append(f"[red]- {k}={_truncate_value(sv)}[/]")
+            out.append(f"[green]+ {k}={_truncate_value(uv)}[/]")
+
+    # New keys introduced by the override.
+    for k in sorted(usr_keys):
+        if k not in sys_keys:
+            out.append(f"[green]+ {k}={_truncate_value(usr_keys[k])}[/]")
+
+    # Keys in system but absent from the override — compact summary line.
+    only_system = sorted(set(sys_keys) - set(usr_keys))
+    if only_system:
+        shown = only_system[:6]
+        more = "" if len(only_system) <= 6 else f" (+{len(only_system) - 6} more)"
+        out.append(
+            f"[dim]system-only: {', '.join(shown)}{more}[/]"
+        )
+
+    if not out:
+        out.append("[dim italic]override matches system exactly[/]")
     return "\n".join(out)
 
 
