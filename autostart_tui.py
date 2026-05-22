@@ -412,9 +412,12 @@ class AutostartApp(App):
 
     BINDINGS = [
         Binding("space", "toggle", "Toggle"),
-        # priority=True so we win over DataTable's own enter binding
-        # (which fires RowSelected and swallows the key).
-        Binding("enter", "preview", "Preview", priority=True),
+        # DataTable's own enter binding fires RowSelected — we listen for
+        # that event (see on_data_table_row_selected) instead of binding
+        # enter directly. Keeping a non-firing binding here so Footer
+        # still shows "Preview" as a discoverable key, and so the command
+        # palette (Ctrl+P) isn't pre-empted by a priority binding.
+        Binding("enter", "preview", "Preview"),
         Binding("f", "cycle_state", "State filter"),
         Binding("s", "cycle_source", "Source filter"),
         Binding("c", "clear_filters", "Clear filters"),
@@ -572,6 +575,12 @@ class AutostartApp(App):
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._update_preview()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # Fires when DataTable has focus and the user presses Enter (or
+        # double-clicks a row). Open the preview modal from here so the
+        # command palette and other screens don't get hijacked.
+        self.action_preview()
 
     # --- helpers ---
 
