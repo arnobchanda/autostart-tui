@@ -1087,13 +1087,20 @@ ICON_GLYPH_MAP: list[tuple[str, str]] = [
 DEFAULT_GLYPH = "󰍹"  # monitor
 
 
-def _boot_cell(boot_ms: int | None) -> str:
-    """6-cell block bar + ms label, colored by speed bucket. Empty if no data."""
+def _boot_cell(boot_ms: int | None, max_ms: int | None = None) -> str:
+    """6-cell block bar + ms label, colored by speed bucket.
+
+    Length scales relative to `max_ms` (the heaviest entry on this
+    machine) so the bar communicates *relative* cost: full bar = the
+    worst offender, half bar = half as expensive, etc. Without a
+    relative scale every typical entry (<200ms) looked identical.
+
+    Empty if no data."""
     if boot_ms is None:
         return ""
     bar_width = 6
-    # 800 ms → full bar; anything slower still saturates at full.
-    filled = min(bar_width, max(1, int(bar_width * boot_ms / 800)))
+    scale = max_ms if max_ms and max_ms > 0 else max(boot_ms, 1)
+    filled = min(bar_width, max(1, int(bar_width * boot_ms / scale)))
     bar = "█" * filled + "░" * (bar_width - filled)
     if boot_ms < 100:
         color = "green"
@@ -1617,6 +1624,10 @@ class AutostartApp(App):
         # every mutation. Each profile records the *disabled* desktop_ids
         # per kind so applying it = batch toggle to flip mismatches.
         self._profiles: list[Profile] = load_profiles()
+        # Heaviest boot_ms across all kinds — used by _boot_cell so the
+        # bar length is meaningful relative to *this* machine's
+        # distribution rather than a hardcoded "800 ms = full bar".
+        self._max_boot_ms: int = 0
 
     def compose(self) -> ComposeResult:
         yield Banner()
@@ -2377,6 +2388,13 @@ class AutostartApp(App):
         self.entries["autostart"] = autostart
         self.entries["launcher"] = launcher
         self.entries["service"] = service
+        # Heaviest entry sets the scale for every boot bar so they
+        # render relatively rather than against an arbitrary 800 ms.
+        self._max_boot_ms = max(
+            (e.boot_ms for e in (*autostart, *launcher, *service)
+             if e.boot_ms is not None),
+            default=0,
+        )
         self._populate("autostart")  # also populates boot-table
         self._populate("launcher")
         self._populate("service")    # re-populates boot-table again
@@ -2634,7 +2652,7 @@ class AutostartApp(App):
             lines += [
                 "",
                 "[bold]Boot cost[/]",
-                _boot_cell(e.boot_ms),
+                _boot_cell(e.boot_ms, self._max_boot_ms),
             ]
         if is_critical(e):
             lines += [
@@ -2681,7 +2699,7 @@ class AutostartApp(App):
         source = f"[{source_color}]{e.source}[/]"
         if not e.enabled:
             source = f"[dim]{source}[/]"
-        boot = _boot_cell(e.boot_ms)
+        boot = _boot_cell(e.boot_ms, self._max_boot_ms)
         prefix = "[bold yellow]⚠[/] " if is_critical(e) else ""
         display_name = e.name if len(e.name) <= 67 else e.name[:66] + "…"
         name = (
