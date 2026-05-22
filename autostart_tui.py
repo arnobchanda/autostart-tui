@@ -1238,6 +1238,176 @@ class RiskConfirm(ModalScreen[bool]):
         self.dismiss(False)
 
 
+PickerResult = tuple[str, Profile | None] | None
+
+
+class ProfilePicker(ModalScreen[PickerResult]):
+    """Modal listing saved profiles. Returns `(action, profile|None)`:
+    `("apply", p)` to apply, `("save", None)` to save current as new,
+    `("delete", p)` to delete; None means user cancelled."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Close"),
+        Binding("q", "cancel", show=False),
+        Binding("enter", "apply", "Apply", priority=True),
+        Binding("n", "save_new", "Save current"),
+        Binding("d", "delete", "Delete"),
+        Binding("up,k", "cursor_up", show=False),
+        Binding("down,j", "cursor_down", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    ProfilePicker {
+        align: center middle;
+    }
+    #picker-dialog {
+        width: 60;
+        height: auto;
+        background: $surface;
+        border: thick $accent;
+        padding: 1 2;
+    }
+    #picker-title {
+        color: $accent;
+        text-style: bold;
+        height: 1;
+    }
+    #picker-list, #picker-empty {
+        margin: 1 0;
+        height: auto;
+    }
+    #picker-help {
+        color: $foreground 70%;
+        height: 1;
+    }
+    """
+
+    def __init__(self, profiles: list[Profile], active_idx: int | None) -> None:
+        super().__init__()
+        self._profiles = profiles
+        self._active_idx = active_idx
+        self._cursor = active_idx if active_idx is not None else 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="picker-dialog"):
+            yield Label("Profiles", id="picker-title")
+            if not self._profiles:
+                yield Static(
+                    "[dim italic]No saved profiles yet. "
+                    "Press [bold]n[/] to capture the current state.[/]",
+                    id="picker-empty",
+                    markup=True,
+                )
+            else:
+                yield Static(
+                    self._render_list(), id="picker-list", markup=True
+                )
+            yield Static(
+                "[bold]enter[/] apply   [bold]n[/] save current   "
+                "[bold]d[/] delete   [bold]esc[/] cancel",
+                id="picker-help",
+                markup=True,
+            )
+
+    def _render_list(self) -> str:
+        lines: list[str] = []
+        for i, p in enumerate(self._profiles):
+            marker = "▶" if i == self._cursor else " "
+            active = " [dim](active)[/]" if i == self._active_idx else ""
+            line = f"{marker} {p.name}{active}"
+            if i == self._cursor:
+                line = f"[reverse]{line}[/]"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _refresh_list(self) -> None:
+        if self._profiles:
+            self.query_one("#picker-list", Static).update(self._render_list())
+
+    def action_cursor_up(self) -> None:
+        if self._profiles:
+            self._cursor = (self._cursor - 1) % len(self._profiles)
+            self._refresh_list()
+
+    def action_cursor_down(self) -> None:
+        if self._profiles:
+            self._cursor = (self._cursor + 1) % len(self._profiles)
+            self._refresh_list()
+
+    def action_apply(self) -> None:
+        if self._profiles:
+            self.dismiss(("apply", self._profiles[self._cursor]))
+
+    def action_save_new(self) -> None:
+        self.dismiss(("save", None))
+
+    def action_delete(self) -> None:
+        if self._profiles:
+            self.dismiss(("delete", self._profiles[self._cursor]))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class NameInput(ModalScreen[str | None]):
+    """Tiny modal that asks for a single line of text. Returns the
+    entered string or None on cancel."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    NameInput {
+        align: center middle;
+    }
+    #name-dialog {
+        width: 50;
+        height: auto;
+        background: $surface;
+        border: thick $accent;
+        padding: 1 2;
+    }
+    #name-title {
+        color: $accent;
+        text-style: bold;
+        height: 1;
+    }
+    #name-input {
+        margin-top: 1;
+    }
+    #name-help {
+        color: $foreground 70%;
+        height: 1;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, prompt: str) -> None:
+        super().__init__()
+        self._prompt = prompt
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="name-dialog"):
+            yield Label(self._prompt, id="name-title")
+            yield Input(id="name-input", placeholder="name")
+            yield Static(
+                "[bold]enter[/] save   [bold]esc[/] cancel",
+                id="name-help",
+                markup=True,
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#name-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        self.dismiss(value or None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class DesktopFilePreview(ModalScreen[None]):
     """Modal dialog showing the raw contents of a .desktop file."""
 
@@ -1397,6 +1567,7 @@ class AutostartApp(App):
         Binding("e", "edit", "Edit file"),
         Binding("x", "reset_to_system", "Reset"),
         Binding("v", "visual", "Select"),
+        Binding("p", "profile", "Profiles"),
         # DataTable's own enter binding fires RowSelected — we listen for
         # that event (see on_data_table_row_selected) instead of binding
         # enter directly. Keeping a non-firing binding here so Footer
@@ -1442,6 +1613,10 @@ class AutostartApp(App):
         # and the current cursor row. `space` then toggles every entry
         # in that range as a single batch.
         self._visual_anchor: int | None = None
+        # Saved profiles, loaded from disk at startup and re-saved on
+        # every mutation. Each profile records the *disabled* desktop_ids
+        # per kind so applying it = batch toggle to flip mismatches.
+        self._profiles: list[Profile] = load_profiles()
 
     def compose(self) -> ComposeResult:
         yield Banner()
@@ -1720,6 +1895,87 @@ class AutostartApp(App):
     def action_toggle_details(self) -> None:
         pane = self.query_one("#details-pane")
         pane.toggle_class("-hidden")
+
+    def action_profile(self) -> None:
+        """Open the profile picker. Selecting one applies it as a
+        batch toggle; pressing n saves the current state as a new
+        profile; d deletes the highlighted one."""
+        active_idx: int | None = None
+        for i, p in enumerate(self._profiles):
+            if profile_matches_current(p, self.entries):
+                active_idx = i
+                break
+
+        def on_dismiss(result: PickerResult) -> None:
+            if result is None:
+                return
+            action, profile = result
+            if action == "apply" and profile is not None:
+                self._apply_profile(profile)
+            elif action == "save":
+                self._prompt_save_profile()
+            elif action == "delete" and profile is not None:
+                self._delete_profile(profile)
+
+        self.push_screen(ProfilePicker(self._profiles, active_idx), on_dismiss)
+
+    def _prompt_save_profile(self) -> None:
+        existing = {p.name for p in self._profiles}
+
+        def on_named(name: str | None) -> None:
+            if not name:
+                return
+            if name in existing:
+                # Overwrite — drop the old entry, then append.
+                self._profiles = [p for p in self._profiles if p.name != name]
+            self._profiles.append(capture_profile(name, self.entries))
+            try:
+                save_profiles(self._profiles)
+            except OSError as exc:
+                self.notify(f"Save failed: {exc}", severity="error", timeout=4.0)
+                return
+            self.notify(f"Saved profile: {name}", timeout=2.5)
+            self._refresh_banner()
+
+        self.push_screen(
+            NameInput("Save current state as profile…"), on_named
+        )
+
+    def _delete_profile(self, profile: Profile) -> None:
+        self._profiles = [p for p in self._profiles if p.name != profile.name]
+        try:
+            save_profiles(self._profiles)
+        except OSError as exc:
+            self.notify(f"Delete failed: {exc}", severity="error", timeout=4.0)
+            return
+        self.notify(f"Deleted profile: {profile.name}", timeout=2.5)
+        self._refresh_banner()
+
+    def _apply_profile(self, profile: Profile) -> None:
+        targets = profile_diff(profile, self.entries)
+        if not targets:
+            self.notify(
+                f"Already on '{profile.name}' — nothing to toggle",
+                timeout=2.5,
+            )
+            return
+        critical_disabling = [e for e in targets if e.enabled and is_critical(e)]
+        if critical_disabling:
+            names = [e.name for e in critical_disabling]
+            def on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._apply_bulk_toggle(targets)
+                    self.notify(
+                        f"Applied profile: {profile.name} ({len(targets)} toggles)",
+                        timeout=3.0,
+                    )
+            self.push_screen(RiskConfirm(names[0], names=names), on_confirm)
+            return
+        self._apply_bulk_toggle(targets)
+        self.notify(
+            f"Applied profile: {profile.name} ({len(targets)} toggles)",
+            timeout=3.0,
+        )
 
     def action_visual(self) -> None:
         """Toggle vim-style visual mode for range selection. Anchor is
@@ -2237,6 +2493,12 @@ class AutostartApp(App):
             filter_bits.append(f'name="{self.search_query}"')
         if filter_bits:
             parts.append("[bold yellow]filters:[/] " + ", ".join(filter_bits))
+        active_profile = next(
+            (p for p in self._profiles if profile_matches_current(p, self.entries)),
+            None,
+        )
+        if active_profile is not None:
+            parts.append(f"[bold magenta]profile:[/] {active_profile.name}")
         rng = self._visual_range()
         if rng is not None:
             low, high = rng
