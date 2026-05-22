@@ -1165,6 +1165,13 @@ class AutostartApp(App):
         border-bottom: solid $primary 40%;
     }
 
+    .tab-subtitle {
+        height: 1;
+        padding: 0 1;
+        background: $panel;
+        border-bottom: solid $primary 25%;
+    }
+
     Header {
         background: $primary 40%;
     }
@@ -1230,13 +1237,29 @@ class AutostartApp(App):
         with Horizontal(id="main-row"):
             with TabbedContent(initial="autostart-tab", id="main-tabs"):
                 with TabPane("󱓞  Autostart [1]", id="autostart-tab"):
-                    yield DataTable(
-                        id="autostart-table", cursor_type="row", zebra_stripes=True
-                    )
+                    with Vertical():
+                        yield Static(
+                            "[dim italic]Apps that auto-run at login  "
+                            "[/][dim](XDG .desktop entries in ~/.config/autostart "
+                            "and /etc/xdg/autostart)[/]",
+                            classes="tab-subtitle",
+                            markup=True,
+                        )
+                        yield DataTable(
+                            id="autostart-table", cursor_type="row", zebra_stripes=True
+                        )
                 with TabPane("󰀻  Launcher Visibility [2]", id="launcher-tab"):
-                    yield DataTable(
-                        id="launcher-table", cursor_type="row", zebra_stripes=True
-                    )
+                    with Vertical():
+                        yield Static(
+                            "[dim italic]Apps shown in your launcher menu  "
+                            "[/][dim](walker, rofi, fuzzel, GNOME, KDE…) — toggle "
+                            "NoDisplay[/]",
+                            classes="tab-subtitle",
+                            markup=True,
+                        )
+                        yield DataTable(
+                            id="launcher-table", cursor_type="row", zebra_stripes=True
+                        )
                 with TabPane("󰓅  Boot [3]", id="boot-tab"):
                     with Vertical():
                         yield Static(
