@@ -646,9 +646,18 @@ def ensure_user_override(entry: Entry) -> Path:
     drop the entry. We guarantee the user file is a full copy of the
     system file (plus whatever keys the user has already overridden) so
     a partial override can never break the entry."""
-    target_dir = AUTOSTART_USER if entry.kind == "autostart" else LAUNCHER_USER_WRITE_DIR
+    if entry.kind == "service":
+        target_dir = SYSTEMD_USER_WRITE_DIR
+        # Service ids already include the .service suffix.
+        suffix = ""
+    elif entry.kind == "autostart":
+        target_dir = AUTOSTART_USER
+        suffix = ".desktop"
+    else:
+        target_dir = LAUNCHER_USER_WRITE_DIR
+        suffix = ".desktop"
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"{entry.desktop_id}.desktop"
+    target = target_dir / f"{entry.desktop_id}{suffix}"
 
     if entry.user_path is None:
         assert entry.system_path is not None
@@ -1365,7 +1374,8 @@ class AutostartApp(App):
         Binding("r", "reload", "Reload"),
         Binding("1", "show_tab('autostart')", "Autostart"),
         Binding("2", "show_tab('launcher')", "Visibility"),
-        Binding("3", "show_tab('boot')", "Boot"),
+        Binding("3", "show_tab('service')", "Services"),
+        Binding("4", "show_tab('boot')", "Boot"),
         Binding("tab,right,l", "next_tab", "Next tab", show=False),
         Binding("shift+tab,left,h", "prev_tab", "Prev tab", show=False),
         Binding("q", "quit", "Quit"),
@@ -1411,7 +1421,11 @@ class AutostartApp(App):
                     yield DataTable(
                         id="launcher-table", cursor_type="row", zebra_stripes=True
                     )
-                with TabPane("󰓅  Boot [3]", id="boot-tab"):
+                with TabPane("󰒓  Services [3]", id="service-tab"):
+                    yield DataTable(
+                        id="service-table", cursor_type="row", zebra_stripes=True
+                    )
+                with TabPane("󰓅  Boot [4]", id="boot-tab"):
                     with Vertical():
                         yield Static(
                             "[dim italic]Loading boot times…[/]",
@@ -1436,7 +1450,10 @@ class AutostartApp(App):
             self.theme = "omarchy"
             self._accent_color = theme.accent
 
-        for tid in ("#autostart-table", "#launcher-table", "#boot-table"):
+        for tid in (
+            "#autostart-table", "#launcher-table",
+            "#service-table", "#boot-table",
+        ):
             table = self.query_one(tid, DataTable)
             table.add_column(" ", width=3)  # icon glyph
             table.add_column("State", width=8)
@@ -1496,7 +1513,7 @@ class AutostartApp(App):
         else:
             self._populate(kind)
         self._sync_inactive_view(entry)
-        if kind == "autostart":
+        if kind in ("autostart", "service"):
             self._refresh_boot_summary()
         self._refresh_banner()
         self._update_details()
@@ -1533,7 +1550,7 @@ class AutostartApp(App):
         else:
             self._populate(kind)
         self._sync_inactive_view(entry)
-        if kind == "autostart":
+        if kind in ("autostart", "service"):
             self._refresh_boot_summary()
         self._refresh_banner()
         self._update_details()
@@ -1541,6 +1558,14 @@ class AutostartApp(App):
     def action_reset_to_system(self) -> None:
         entry = self._current_entry()
         if entry is None:
+            return
+        if entry.kind == "service":
+            self.notify(
+                "Reset isn't supported for systemd units. Use "
+                "`systemctl --user revert <unit>` to drop overrides.",
+                severity="warning",
+                timeout=5.0,
+            )
             return
         if entry.user_path is None:
             self.notify("No user override to reset", severity="warning", timeout=2.0)
@@ -1576,7 +1601,7 @@ class AutostartApp(App):
         else:
             self._populate(entry.kind)
         self._sync_inactive_view(entry)
-        if entry.kind == "autostart":
+        if entry.kind in ("autostart", "service"):
             self._refresh_boot_summary()
         self._refresh_banner()
         self._update_details()
@@ -1607,7 +1632,16 @@ class AutostartApp(App):
                 return
             # The file may have changed enabled-state, name, exec, etc.
             # Easiest correct refresh: re-read everything.
-            self.notify("Saved · reloading", timeout=1.5)
+            if entry.kind == "service":
+                # systemd doesn't pick up unit-file edits until daemon-reload;
+                # do it for the user so the next reload's state is accurate.
+                subprocess.run(
+                    ["systemctl", "--user", "daemon-reload"],
+                    capture_output=True, timeout=5, check=False,
+                )
+                self.notify("Saved · daemon-reload · reloading", timeout=2.0)
+            else:
+                self.notify("Saved · reloading", timeout=1.5)
             self.action_reload()
 
         self.push_screen(DesktopFileEditor(entry.name, path, content), on_done)
@@ -1632,8 +1666,7 @@ class AutostartApp(App):
         if clear:
             inp.value = ""
             self.search_query = ""
-            self._populate("autostart")
-            self._populate("launcher")
+            self._populate_all()
             self._refresh_banner()
         inp.add_class("-hidden")
         inp.disabled = True  # take it out of the focus chain again
@@ -1690,7 +1723,7 @@ class AutostartApp(App):
         self._update_preview()
         self._update_details()
 
-    _TAB_ORDER = ("autostart-tab", "launcher-tab", "boot-tab")
+    _TAB_ORDER = ("autostart-tab", "launcher-tab", "service-tab", "boot-tab")
 
     def action_next_tab(self) -> None:
         tabs = self.query_one(TabbedContent)
@@ -1738,8 +1771,7 @@ class AutostartApp(App):
         if event.input.id != "search-input":
             return
         self.search_query = event.value
-        self._populate("autostart")
-        self._populate("launcher")
+        self._populate_all()
         self._refresh_banner()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -1777,7 +1809,14 @@ class AutostartApp(App):
     _TAB_TO_TABLE = {
         "autostart-tab": "#autostart-table",
         "launcher-tab": "#launcher-table",
+        "service-tab": "#service-table",
         "boot-tab": "#boot-table",
+    }
+    _TAB_TO_KIND: dict[str, EntryKind] = {
+        "autostart-tab": "autostart",
+        "launcher-tab": "launcher",
+        "service-tab": "service",
+        "boot-tab": "autostart",  # Boot is a view over autostart + service
     }
     _TAB_DESCRIPTIONS = {
         "autostart-tab": (
@@ -1788,8 +1827,12 @@ class AutostartApp(App):
             "Apps shown in your launcher menu (walker, rofi, fuzzel, "
             "GNOME, KDE…) — toggles NoDisplay"
         ),
+        "service-tab": (
+            "User systemd services — toggle calls `systemctl --user "
+            "enable/disable`. Templates and static units hidden."
+        ),
         "boot-tab": (
-            "Boot impact of autostart entries — sort desc by ms cost. "
+            "Boot impact of autostart + services — sorted desc by ms. "
             "Toggle to see saved ms update live."
         ),
     }
@@ -1801,7 +1844,7 @@ class AutostartApp(App):
 
     def _active_kind(self) -> EntryKind:
         tabs = self.query_one(TabbedContent)
-        return "launcher" if tabs.active == "launcher-tab" else "autostart"
+        return self._TAB_TO_KIND.get(tabs.active, "autostart")
 
     def _active_table(self) -> DataTable:
         tabs = self.query_one(TabbedContent)
@@ -1845,18 +1888,21 @@ class AutostartApp(App):
 
         autostart = discover_autostart(progress)
         launcher = discover_launcher(progress)
+        service = discover_systemd_user(progress)
         # Self-heal: backfill any user overrides that previous versions
         # (or other tools) left as two-line stubs. Toggling already
         # backfills on demand, but launchers may silently drop entries
         # in the meantime — repair on load so the user doesn't have to
-        # touch each one to fix it.
+        # touch each one to fix it. (Doesn't apply to systemd units.)
         repaired = repair_incomplete_overrides(autostart) + repair_incomplete_overrides(launcher)
         # Scrape systemd-analyze blame in the same worker so we don't block
         # the UI later. Best-effort: silently skipped if systemd isn't there.
         boot = load_boot_times()
-        for e in (*autostart, *launcher):
+        for e in (*autostart, *launcher, *service):
             e.boot_ms = match_boot_time(e, boot)
-        self.call_from_thread(self._on_discovery_done, autostart, launcher, repaired)
+        self.call_from_thread(
+            self._on_discovery_done, autostart, launcher, service, repaired
+        )
 
     def _set_scan_progress(self, current: int, total: int) -> None:
         bar_width = 20
@@ -1868,13 +1914,22 @@ class AutostartApp(App):
         )
 
     def _on_discovery_done(
-        self, autostart: list[Entry], launcher: list[Entry], repaired: int = 0
+        self,
+        autostart: list[Entry],
+        launcher: list[Entry],
+        service: list[Entry],
+        repaired: int = 0,
     ) -> None:
         self.entries["autostart"] = autostart
         self.entries["launcher"] = launcher
+        self.entries["service"] = service
         self._populate("autostart")  # also populates boot-table
         self._populate("launcher")
-        for tid in ("#autostart-table", "#launcher-table", "#boot-table"):
+        self._populate("service")    # re-populates boot-table again
+        for tid in (
+            "#autostart-table", "#launcher-table",
+            "#service-table", "#boot-table",
+        ):
             self.query_one(tid, DataTable).loading = False
         self._update_preview()
         self._update_details()
@@ -1889,8 +1944,8 @@ class AutostartApp(App):
 
     def _populate(self, kind: EntryKind) -> None:
         """Refresh the table view from the in-memory entries + current filters.
-        For autostart, also refresh the Boot view since both feed off the
-        same data."""
+        For autostart and service, also refresh the Boot view since it
+        feeds off both."""
         table = self.query_one(f"#{kind}-table", DataTable)
         cursor_row = table.cursor_row if table.row_count else 0
         table.clear()
@@ -1898,23 +1953,26 @@ class AutostartApp(App):
             table.add_row(*self._row_cells(e), key=e.desktop_id)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
-        if kind == "autostart":
+        if kind in ("autostart", "service"):
             self._populate_boot()
 
     def _populate_all(self) -> None:
         self._populate("autostart")
         self._populate("launcher")
+        self._populate("service")
 
     def _populate_boot(self) -> None:
-        """Refresh the Boot Impact view: filtered autostart entries with
-        a matched boot_ms, sorted by ms descending. Stable across toggles
-        — we only resort here (called on initial discovery, reload, and
-        filter changes), so toggling a row in this view does not yank it
-        across the screen."""
+        """Refresh the Boot Impact view: autostart + service entries
+        with a matched boot_ms, sorted descending by ms. Stable across
+        toggles — sort only recomputes here (called on discovery,
+        reload, filter changes) so toggling doesn't yank rows."""
         table = self.query_one("#boot-table", DataTable)
         cursor_row = table.cursor_row if table.row_count else 0
         table.clear()
-        rows = [e for e in self._filtered("autostart") if e.boot_ms is not None]
+        rows = [
+            e for e in (*self._filtered("autostart"), *self._filtered("service"))
+            if e.boot_ms is not None
+        ]
         rows.sort(key=lambda e: e.boot_ms or 0, reverse=True)
         for e in rows:
             table.add_row(*self._row_cells(e), key=e.desktop_id)
@@ -1923,16 +1981,15 @@ class AutostartApp(App):
         self._refresh_boot_summary()
 
     def _refresh_boot_summary(self) -> None:
-        """Three numbers, one line: live boot cost of enabled autostart
-        entries, ms already saved by disabling things, and how many
-        autostart entries we couldn't match to a systemd-analyze unit
-        (so the user knows the totals are incomplete)."""
+        """Three numbers, one line: live boot cost of enabled
+        autostart+service entries, ms saved by disabling, and how many
+        entries we couldn't match to a systemd-analyze unit."""
         widget = self.query_one("#boot-summary", Static)
-        a = self.entries["autostart"]
-        if not a:
+        pool = [*self.entries["autostart"], *self.entries["service"]]
+        if not pool:
             widget.update("[dim italic]Loading boot times…[/]")
             return
-        with_data = [e for e in a if e.boot_ms is not None]
+        with_data = [e for e in pool if e.boot_ms is not None]
         if not with_data:
             widget.update(
                 "[yellow]No systemd-analyze blame data available.[/]  "
@@ -1941,7 +1998,7 @@ class AutostartApp(App):
             return
         enabled_ms = sum(e.boot_ms or 0 for e in with_data if e.enabled)
         saved_ms = sum(e.boot_ms or 0 for e in with_data if not e.enabled)
-        unmatched = sum(1 for e in a if e.boot_ms is None)
+        unmatched = sum(1 for e in pool if e.boot_ms is None)
         parts = [
             f"[bold]Enabled boot cost:[/] [{self._accent_color}]{enabled_ms} ms[/]",
             f"[bold green]Disabled saves:[/] {saved_ms} ms",
@@ -1954,8 +2011,10 @@ class AutostartApp(App):
         """Rewrite the banner stats line: counts + active filters."""
         a = self.entries["autostart"]
         l_ = self.entries["launcher"]
+        s = self.entries["service"]
         a_on = sum(1 for e in a if e.enabled)
         l_vis = sum(1 for e in l_ if e.enabled)
+        s_on = sum(1 for e in s if e.enabled)
         parts: list[str] = []
         if a:
             parts.append(
@@ -1964,6 +2023,10 @@ class AutostartApp(App):
         if l_:
             parts.append(
                 f"[bold]Launcher[/]  {l_vis} visible  [dim]·[/]  {len(l_) - l_vis} hidden"
+            )
+        if s:
+            parts.append(
+                f"[bold]Services[/]  {s_on} on  [dim]·[/]  {len(s) - s_on} off"
             )
         if not parts:
             parts.append("[dim italic]loading…[/]")
@@ -1984,14 +2047,16 @@ class AutostartApp(App):
         self._update_preview()
 
     def _sync_inactive_view(self, entry: Entry) -> None:
-        """When an autostart entry toggles, the row needs to update in
-        whichever of (autostart-table, boot-table) isn't the active one,
-        otherwise switching tabs shows stale state. Cheap — just an
-        in-place cell rewrite, no re-sort."""
-        if entry.kind != "autostart":
+        """When an autostart or service entry toggles, refresh the row
+        in whichever of its companion views isn't currently active.
+        Both kinds appear in their own tab *and* the Boot tab, so a
+        toggle on one tab needs to update the other view to avoid
+        stale cells."""
+        kind_table = f"#{entry.kind}-table"
+        if entry.kind not in ("autostart", "service"):
             return
         active = self._active_table()
-        for tid in ("#autostart-table", "#boot-table"):
+        for tid in (kind_table, "#boot-table"):
             table = self.query_one(tid, DataTable)
             if table is active:
                 continue
@@ -2026,10 +2091,10 @@ class AutostartApp(App):
             self._refresh_row(table, row_idx, entry)
 
     def _current_entry(self) -> Entry | None:
-        # Must use the *active* table widget, not f"#{kind}-table" — the
-        # Boot tab maps to kind="autostart" but its cursor lives on the
-        # boot-table widget, not the autostart-table widget.
-        kind = self._active_kind()
+        # Use the *active* table widget, not f"#{kind}-table" — the Boot
+        # tab's table widget is boot-table even though kind is autostart.
+        # Boot also surfaces service entries, so we widen the lookup
+        # there to cover both kinds.
         table = self._active_table()
         if not table.row_count:
             return None
@@ -2037,7 +2102,16 @@ class AutostartApp(App):
             row_key = table.coordinate_to_cell_key((table.cursor_row, 0)).row_key
         except Exception:
             return None
-        return next((e for e in self.entries[kind] if e.desktop_id == row_key.value), None)
+        active_tab = self.query_one(TabbedContent).active
+        if active_tab == "boot-tab":
+            pools: tuple[EntryKind, ...] = ("autostart", "service")
+        else:
+            pools = (self._active_kind(),)
+        for pool in pools:
+            for e in self.entries[pool]:
+                if e.desktop_id == row_key.value:
+                    return e
+        return None
 
     def _update_preview(self) -> None:
         preview = self.query_one("#exec-preview", Static)
