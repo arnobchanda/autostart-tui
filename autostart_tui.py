@@ -1165,12 +1165,13 @@ class AutostartApp(App):
         border-bottom: solid $primary 40%;
     }
 
-    .tab-subtitle {
+    #tab-description {
         height: auto;
         padding: 0 1;
         background: $panel;
         color: $foreground-muted;
-        border-bottom: solid $primary 25%;
+        text-style: italic;
+        border-top: solid $primary 25%;
     }
 
     Header {
@@ -1238,25 +1239,13 @@ class AutostartApp(App):
         with Horizontal(id="main-row"):
             with TabbedContent(initial="autostart-tab", id="main-tabs"):
                 with TabPane("󱓞  Autostart [1]", id="autostart-tab"):
-                    with Vertical():
-                        yield Static(
-                            "Apps that auto-run at login — XDG .desktop entries "
-                            "in ~/.config/autostart and /etc/xdg/autostart",
-                            classes="tab-subtitle",
-                        )
-                        yield DataTable(
-                            id="autostart-table", cursor_type="row", zebra_stripes=True
-                        )
+                    yield DataTable(
+                        id="autostart-table", cursor_type="row", zebra_stripes=True
+                    )
                 with TabPane("󰀻  Launcher Visibility [2]", id="launcher-tab"):
-                    with Vertical():
-                        yield Static(
-                            "Apps shown in your launcher menu (walker, rofi, "
-                            "fuzzel, GNOME, KDE…) — toggles NoDisplay",
-                            classes="tab-subtitle",
-                        )
-                        yield DataTable(
-                            id="launcher-table", cursor_type="row", zebra_stripes=True
-                        )
+                    yield DataTable(
+                        id="launcher-table", cursor_type="row", zebra_stripes=True
+                    )
                 with TabPane("󰓅  Boot [3]", id="boot-tab"):
                     with Vertical():
                         yield Static(
@@ -1271,6 +1260,7 @@ class AutostartApp(App):
                 yield Static(
                     "[dim italic]Loading…[/]", id="details-content", markup=True
                 )
+        yield Static("", id="tab-description")
         yield Static("", id="exec-preview", markup=True)
         yield Footer()
 
@@ -1294,6 +1284,7 @@ class AutostartApp(App):
         self.query_one("#exec-preview", Static).update(
             "[dim italic]Scanning desktop entries…[/]"
         )
+        self._refresh_tab_description()
         self._refresh_banner()
         self._discover_all()
 
@@ -1593,6 +1584,7 @@ class AutostartApp(App):
         self._active_table().focus()
         self._update_preview()
         self._update_details()
+        self._refresh_tab_description()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         # Fires when DataTable has focus and the user presses Enter (or
@@ -1613,6 +1605,25 @@ class AutostartApp(App):
         "launcher-tab": "#launcher-table",
         "boot-tab": "#boot-table",
     }
+    _TAB_DESCRIPTIONS = {
+        "autostart-tab": (
+            "Apps that auto-run at login — XDG .desktop entries in "
+            "~/.config/autostart and /etc/xdg/autostart"
+        ),
+        "launcher-tab": (
+            "Apps shown in your launcher menu (walker, rofi, fuzzel, "
+            "GNOME, KDE…) — toggles NoDisplay"
+        ),
+        "boot-tab": (
+            "Boot impact of autostart entries — sort desc by ms cost. "
+            "Toggle to see saved ms update live."
+        ),
+    }
+
+    def _refresh_tab_description(self) -> None:
+        tabs = self.query_one(TabbedContent)
+        text = self._TAB_DESCRIPTIONS.get(tabs.active, "")
+        self.query_one("#tab-description", Static).update(text)
 
     def _active_kind(self) -> EntryKind:
         tabs = self.query_one(TabbedContent)
