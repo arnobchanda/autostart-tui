@@ -1132,84 +1132,6 @@ class RiskConfirm(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class DesktopFileEditor(ModalScreen[bool]):
-    """Modal that lets the user edit the .desktop file in a TextArea."""
-
-    BINDINGS = [
-        Binding("ctrl+s", "save", "Save"),
-        Binding("escape", "cancel", "Cancel", priority=True),
-    ]
-
-    DEFAULT_CSS = """
-    DesktopFileEditor {
-        align: center middle;
-    }
-    #edit-dialog {
-        width: 90%;
-        height: 80%;
-        background: $surface;
-        border: thick $accent;
-        padding: 0;
-    }
-    #edit-title {
-        background: $accent 40%;
-        color: $foreground;
-        text-style: bold;
-        padding: 0 2;
-        height: 1;
-    }
-    #edit-path {
-        background: $panel;
-        color: $accent;
-        padding: 0 2;
-        height: 1;
-    }
-    #edit-area {
-        height: 1fr;
-        border: none;
-    }
-    #edit-help {
-        background: $panel;
-        color: $foreground 70%;
-        padding: 0 2;
-        height: 1;
-    }
-    """
-
-    def __init__(self, name: str, path: Path, content: str) -> None:
-        super().__init__()
-        self._name = name
-        self._path = path
-        self._content = content
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="edit-dialog"):
-            yield Label(f"  {self._name}", id="edit-title")
-            yield Label(str(self._path), id="edit-path")
-            yield TextArea.code_editor(
-                self._content,
-                language="ini",
-                id="edit-area",
-                show_line_numbers=True,
-            )
-            yield Label(
-                "Ctrl+S to save   ·   Esc to cancel",
-                id="edit-help",
-            )
-
-    def action_save(self) -> None:
-        new_text = self.query_one("#edit-area", TextArea).text
-        try:
-            self._path.write_text(new_text, encoding="utf-8")
-        except OSError as exc:
-            self.notify(f"Save failed: {exc}", severity="error", timeout=3.0)
-            return
-        self.dismiss(True)
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
-
-
 class DesktopFilePreview(ModalScreen[None]):
     """Modal dialog showing the raw contents of a .desktop file."""
 
@@ -1786,30 +1708,39 @@ class AutostartApp(App):
         except OSError as exc:
             self.notify(f"Cannot create override: {exc}", severity="error", timeout=3.0)
             return
+
+        # Resolve $EDITOR. shlex handles `EDITOR="emacs -nw"` and the
+        # like; fall back to vi (POSIX-guaranteed) when unset.
+        editor_env = os.environ.get("EDITOR", "").strip()
         try:
-            content = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            self.notify(f"Read failed: {exc}", severity="error", timeout=3.0)
-            return
+            cmd = shlex.split(editor_env) if editor_env else ["vi"]
+        except ValueError:
+            cmd = ["vi"]
+        cmd.append(str(path))
 
-        def on_done(saved: bool | None) -> None:
-            if not saved:
-                return
-            # The file may have changed enabled-state, name, exec, etc.
-            # Easiest correct refresh: re-read everything.
-            if entry.kind == "service":
-                # systemd doesn't pick up unit-file edits until daemon-reload;
-                # do it for the user so the next reload's state is accurate.
-                subprocess.run(
-                    ["systemctl", "--user", "daemon-reload"],
-                    capture_output=True, timeout=5, check=False,
+        kind = entry.kind  # capture before suspend (entry may be mutated by reload)
+        with self.suspend():
+            try:
+                subprocess.run(cmd, check=False)
+            except FileNotFoundError:
+                # Editor binary missing — re-enter TUI before notifying
+                # so the toast actually shows up.
+                self.notify(
+                    f"Editor not found: {cmd[0]}. Set $EDITOR.",
+                    severity="error", timeout=5.0,
                 )
-                self.notify("Saved · daemon-reload · reloading", timeout=2.0)
-            else:
-                self.notify("Saved · reloading", timeout=1.5)
-            self.action_reload()
-
-        self.push_screen(DesktopFileEditor(entry.name, path, content), on_done)
+                return
+        if kind == "service":
+            # systemd doesn't pick up unit-file edits until daemon-reload;
+            # do it for the user so the next reload's state is accurate.
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True, timeout=5, check=False,
+            )
+            self.notify("daemon-reload · reloading", timeout=2.0)
+        else:
+            self.notify("Reloading", timeout=1.0)
+        self.action_reload()
 
     def action_search(self) -> None:
         inp = self.query_one("#search-input", Input)
