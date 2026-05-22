@@ -1166,11 +1166,10 @@ class AutostartApp(App):
     }
 
     .tab-subtitle {
-        height: 1;
+        height: auto;
         padding: 0 1;
         background: $panel;
-        color: $foreground 60%;
-        text-style: italic;
+        color: $foreground-muted;
         border-bottom: solid $primary 25%;
     }
 
