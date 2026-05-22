@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -458,11 +459,13 @@ class AutostartApp(App):
             table.add_column("State", width=8)
             table.add_column("Source", width=14)
             table.add_column("Name")
+            table.loading = True  # built-in spinner overlay
 
-        self._reload("autostart")
-        self._reload("launcher")
         self._active_table().focus()
-        self._update_preview()
+        self.query_one("#exec-preview", Static).update(
+            "[dim italic]Scanning desktop entries…[/]"
+        )
+        self._discover_all()
 
     # --- actions ---
 
@@ -502,10 +505,10 @@ class AutostartApp(App):
         self.push_screen(DesktopFilePreview(entry.name, path, content))
 
     def action_reload(self) -> None:
-        self._reload("autostart")
-        self._reload("launcher")
-        n = len(self.entries["autostart"]) + len(self.entries["launcher"])
-        self.notify(f"Reloaded ({n} entries total)", timeout=1.5)
+        for tid in ("#autostart-table", "#launcher-table"):
+            self.query_one(tid, DataTable).loading = True
+        self.notify("Reloading…", timeout=1.0)
+        self._discover_all()
 
     def action_cycle_state(self) -> None:
         self.state_filter = STATE_CYCLE[self.state_filter]
@@ -595,9 +598,28 @@ class AutostartApp(App):
         return rs
 
     def _reload(self, kind: EntryKind) -> None:
-        """Re-read from disk and repopulate the table."""
+        """Synchronous re-read (kept for explicit single-kind refreshes)."""
         self.entries[kind] = discover_autostart() if kind == "autostart" else discover_launcher()
         self._populate(kind)
+
+    @work(thread=True, exclusive=True, group="discover")
+    def _discover_all(self) -> None:
+        """Run both discovery passes off the main thread so the UI stays
+        responsive while we read ~150 .desktop files."""
+        autostart = discover_autostart()
+        launcher = discover_launcher()
+        self.call_from_thread(self._on_discovery_done, autostart, launcher)
+
+    def _on_discovery_done(
+        self, autostart: list[Entry], launcher: list[Entry]
+    ) -> None:
+        self.entries["autostart"] = autostart
+        self.entries["launcher"] = launcher
+        for kind, tid in (("autostart", "#autostart-table"), ("launcher", "#launcher-table")):
+            table = self.query_one(tid, DataTable)
+            self._populate(kind)
+            table.loading = False
+        self._update_preview()
 
     def _populate(self, kind: EntryKind) -> None:
         """Refresh the table view from the in-memory entries + current filters."""
