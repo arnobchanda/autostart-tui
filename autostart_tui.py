@@ -31,8 +31,19 @@ from typing import Literal
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
+from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import DataTable, Footer, Header, Static, TabbedContent, TabPane
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Header,
+    Label,
+    Static,
+    TabbedContent,
+    TabPane,
+    TextArea,
+)
 
 # ---------- Paths ----------
 
@@ -275,6 +286,79 @@ def load_omarchy_theme() -> Theme | None:
 
 # ---------- TUI ----------
 
+StateFilter = Literal["all", "on", "off"]
+SourceFilter = Literal["all", "user", "system"]
+
+STATE_CYCLE: dict[StateFilter, StateFilter] = {"all": "on", "on": "off", "off": "all"}
+SOURCE_CYCLE: dict[SourceFilter, SourceFilter] = {
+    "all": "user",
+    "user": "system",
+    "system": "all",
+}
+
+
+class DesktopFilePreview(ModalScreen[None]):
+    """Modal dialog showing the raw contents of a .desktop file."""
+
+    BINDINGS = [
+        Binding("escape,q,enter", "dismiss", "Close"),
+    ]
+
+    DEFAULT_CSS = """
+    DesktopFilePreview {
+        align: center middle;
+    }
+
+    #preview-dialog {
+        width: 90%;
+        height: 80%;
+        background: $surface;
+        border: thick $primary;
+        padding: 0;
+    }
+
+    #preview-title {
+        background: $primary 40%;
+        color: $foreground;
+        text-style: bold;
+        padding: 0 2;
+        height: 1;
+        width: 100%;
+    }
+
+    #preview-path {
+        background: $panel;
+        color: $accent;
+        padding: 0 2;
+        height: 1;
+        width: 100%;
+    }
+
+    #preview-area {
+        height: 1fr;
+        border: none;
+    }
+    """
+
+    def __init__(self, name: str, path: Path, content: str) -> None:
+        super().__init__()
+        self._title = name
+        self._path = path
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="preview-dialog"):
+            yield Label(self._title, id="preview-title")
+            yield Label(str(self._path), id="preview-path")
+            yield TextArea.code_editor(
+                self._content,
+                language="ini",
+                read_only=True,
+                id="preview-area",
+                show_line_numbers=True,
+            )
+
+
 class AutostartApp(App):
     TITLE = "autostart-tui"
     SUB_TITLE = "autostart + launcher manager"
@@ -323,11 +407,16 @@ class AutostartApp(App):
     """
 
     BINDINGS = [
-        Binding("space,enter", "toggle", "Toggle"),
+        Binding("space", "toggle", "Toggle"),
+        Binding("enter", "preview", "Preview"),
+        Binding("f", "cycle_state", "State filter"),
+        Binding("s", "cycle_source", "Source filter"),
+        Binding("c", "clear_filters", "Clear filters"),
         Binding("r", "reload", "Reload"),
         Binding("1", "show_tab('autostart')", "Autostart"),
         Binding("2", "show_tab('launcher')", "Launcher"),
-        Binding("tab", "next_tab", "Switch tab", show=False),
+        Binding("tab,right,l", "next_tab", "Next tab", show=False),
+        Binding("shift+tab,left,h", "prev_tab", "Prev tab", show=False),
         Binding("q,escape", "quit", "Quit"),
         Binding("j,down", "down", "Down", show=False),
         Binding("k,up", "up", "Up", show=False),
@@ -340,6 +429,8 @@ class AutostartApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.entries: dict[EntryKind, list[Entry]] = {"autostart": [], "launcher": []}
+        self.state_filter: StateFilter = "all"
+        self.source_filter: SourceFilter = "all"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -371,16 +462,10 @@ class AutostartApp(App):
     # --- actions ---
 
     def action_toggle(self) -> None:
-        kind = self._active_kind()
-        table = self._active_table()
-        entries = self.entries[kind]
-        if not entries or table.row_count == 0:
-            return
-        cursor_row = table.cursor_row
-        row_key = table.coordinate_to_cell_key((cursor_row, 0)).row_key
-        entry = next((e for e in entries if e.desktop_id == row_key.value), None)
+        entry = self._current_entry()
         if entry is None:
             return
+        kind = entry.kind
         (toggle_autostart if kind == "autostart" else toggle_launcher)(entry)
         verb = "Enabled" if entry.enabled else ("Disabled" if kind == "autostart" else "Hidden")
         if kind == "launcher" and entry.enabled:
@@ -390,13 +475,54 @@ class AutostartApp(App):
             severity="information" if entry.enabled else "warning",
             timeout=2.0,
         )
-        self._refresh_row(table, cursor_row, entry)
+        # If a filter is active, the entry may have moved in/out of the view.
+        if self.state_filter == "all" and self.source_filter == "all":
+            self._refresh_row(self._active_table(), self._active_table().cursor_row, entry)
+        else:
+            self._populate(kind)
+
+    def action_preview(self) -> None:
+        entry = self._current_entry()
+        if entry is None:
+            return
+        path = entry.user_path or entry.system_path
+        if path is None or not path.is_file():
+            self.notify("No file to preview", severity="warning", timeout=1.5)
+            return
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            self.notify(f"Read error: {exc}", severity="error", timeout=2.0)
+            return
+        self.push_screen(DesktopFilePreview(entry.name, path, content))
 
     def action_reload(self) -> None:
         self._reload("autostart")
         self._reload("launcher")
         n = len(self.entries["autostart"]) + len(self.entries["launcher"])
         self.notify(f"Reloaded ({n} entries total)", timeout=1.5)
+
+    def action_cycle_state(self) -> None:
+        self.state_filter = STATE_CYCLE[self.state_filter]
+        self._populate(self._active_kind())
+        self._populate(self._other_kind())
+        self.notify(f"State filter: {self.state_filter}", timeout=1.0)
+        self._update_subtitle()
+
+    def action_cycle_source(self) -> None:
+        self.source_filter = SOURCE_CYCLE[self.source_filter]
+        self._populate(self._active_kind())
+        self._populate(self._other_kind())
+        self.notify(f"Source filter: {self.source_filter}", timeout=1.0)
+        self._update_subtitle()
+
+    def action_clear_filters(self) -> None:
+        self.state_filter = "all"
+        self.source_filter = "all"
+        self._populate("autostart")
+        self._populate("launcher")
+        self.notify("Filters cleared", timeout=1.0)
+        self._update_subtitle()
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one(TabbedContent).active = f"{tab_id}-tab"
@@ -408,6 +534,11 @@ class AutostartApp(App):
         tabs.active = "launcher-tab" if tabs.active == "autostart-tab" else "autostart-tab"
         self._active_table().focus()
         self._update_preview()
+
+    def action_prev_tab(self) -> None:
+        # With only two tabs, "prev" == "next" — kept separate for clarity
+        # so binding labels can differ if a third tab is added later.
+        self.action_next_tab()
 
     def action_down(self) -> None:
         self._active_table().action_cursor_down()
@@ -440,19 +571,46 @@ class AutostartApp(App):
         tabs = self.query_one(TabbedContent)
         return "launcher" if tabs.active == "launcher-tab" else "autostart"
 
+    def _other_kind(self) -> EntryKind:
+        return "launcher" if self._active_kind() == "autostart" else "autostart"
+
     def _active_table(self) -> DataTable:
-        kind = self._active_kind()
-        return self.query_one(f"#{kind}-table", DataTable)
+        return self.query_one(f"#{self._active_kind()}-table", DataTable)
+
+    def _filtered(self, kind: EntryKind) -> list[Entry]:
+        rs = self.entries[kind]
+        if self.state_filter == "on":
+            rs = [e for e in rs if e.enabled]
+        elif self.state_filter == "off":
+            rs = [e for e in rs if not e.enabled]
+        if self.source_filter == "user":
+            rs = [e for e in rs if e.user_path is not None]
+        elif self.source_filter == "system":
+            rs = [e for e in rs if e.user_path is None and e.system_path is not None]
+        return rs
 
     def _reload(self, kind: EntryKind) -> None:
+        """Re-read from disk and repopulate the table."""
         self.entries[kind] = discover_autostart() if kind == "autostart" else discover_launcher()
+        self._populate(kind)
+
+    def _populate(self, kind: EntryKind) -> None:
+        """Refresh the table view from the in-memory entries + current filters."""
         table = self.query_one(f"#{kind}-table", DataTable)
         cursor_row = table.cursor_row if table.row_count else 0
         table.clear()
-        for e in self.entries[kind]:
+        for e in self._filtered(kind):
             table.add_row(*_row_cells(e), key=e.desktop_id)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
+
+    def _update_subtitle(self) -> None:
+        bits: list[str] = []
+        if self.state_filter != "all":
+            bits.append(f"state={self.state_filter}")
+        if self.source_filter != "all":
+            bits.append(f"source={self.source_filter}")
+        self.sub_title = "filters: " + ", ".join(bits) if bits else "autostart + launcher manager"
 
     def _refresh_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
         for col_idx, value in enumerate(_row_cells(entry)):
