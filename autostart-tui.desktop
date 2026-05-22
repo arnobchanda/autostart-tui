@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Autostart Manager
+GenericName=Startup Apps
+Comment=Enable or disable XDG autostart entries from a TUI
+Exec=autostart-tui
+Icon=system-run
+Terminal=true
+Categories=System;Settings;ConsoleOnly;
+Keywords=autostart;startup;boot;login;session;xdg

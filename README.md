@@ -41,12 +41,20 @@ This means every change is non-destructive and easy to undo by hand
 ## Install
 
 ```bash
-git clone git@github.com:arnobchanda/autostart-tui.git
-cd autostart-tui
-install -Dm755 autostart_tui.py ~/.local/bin/autostart-tui
+git clone git@github.com:arnobchanda/autostart-tui.git ~/Dev/personal/autostart-tui
+cd ~/Dev/personal/autostart-tui
+
+# Symlink so edits to the repo apply immediately
+ln -sf "$PWD/autostart_tui.py"      ~/.local/bin/autostart-tui
+ln -sf "$PWD/autostart-tui.desktop" ~/.local/share/applications/autostart-tui.desktop
+
+update-desktop-database ~/.local/share/applications 2>/dev/null
 ```
 
-Then run `autostart-tui`. Requires Python 3.10+.
+Then run `autostart-tui` from a terminal, or launch **Autostart Manager**
+from your app launcher (walker, rofi, fuzzel, GNOME, etc.). Requires
+Python 3.10+ and a Nerd-Font-capable terminal isn't needed — output is
+plain ASCII + box symbols.
 
 ## Keys
 
