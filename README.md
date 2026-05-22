@@ -47,6 +47,14 @@ rofi, fuzzel, GNOME menu, KDE Kicker, …).
 Same non-destructive rule: system files stay untouched; user-side
 overrides land in `~/.local/share/applications/`.
 
+> **About overrides**: per the XDG Desktop Entry Spec, a user `.desktop`
+> file with the same name as a system one **fully shadows** the system
+> file — fields are not merged. To keep entries from silently
+> disappearing from launchers, the toggle copies the whole system entry
+> into the user override on first write, and backfills any missing keys
+> on subsequent writes. The override panel still only shows the keys
+> the user actually changes.
+
 ## Features
 
 - **Two tabs** for autostart entries and launcher visibility (`1`/`2`,
@@ -57,6 +65,13 @@ overrides land in `~/.local/share/applications/`.
 - **Desktop-file preview**: press `Enter` on any row to open a modal
   showing the raw `.desktop` file with INI syntax highlighting and line
   numbers
+- **Inline editor**: press `e` to edit the user override in-place
+  (`Ctrl+S` to save, `Esc` to cancel) without leaving the TUI
+- **Details side-panel** (`i`) showing Exec, file paths, override
+  effect, and a parsed key-level diff against the system file
+- **Search** (`/`) — substring match on Name + Exec, layered on top of
+  state and source filters
+- **Undo** (`z`) — reverts the last toggle, with a short toast
 - **Live details strip** under the table — the highlighted row's
   `Exec=` command and source path stay visible at all times
 - **Async startup**: UI paints immediately with loading spinners; the
@@ -75,10 +90,12 @@ overrides land in `~/.local/share/applications/`.
 ## Install
 
 ```bash
-git clone git@github.com:arnobchanda/autostart-tui.git ~/Dev/personal/autostart-tui
-cd ~/Dev/personal/autostart-tui
+# Clone wherever you keep source checkouts
+git clone https://github.com/arnobchanda/autostart-tui.git
+cd autostart-tui
 
 # Symlink so edits in the repo apply immediately
+mkdir -p ~/.local/bin ~/.local/share/applications
 ln -sf "$PWD/autostart_tui.py"      ~/.local/bin/autostart-tui
 ln -sf "$PWD/autostart-tui.desktop" ~/.local/share/applications/autostart-tui.desktop
 
@@ -126,6 +143,10 @@ let your launcher pick a terminal for you.
 | `Shift+G` / `End` | Jump to bottom |
 | `PgUp` / `PgDn` | Page up / down |
 | `Space` | Toggle the highlighted entry |
+| `z` | Undo the last toggle |
+| `i` | Show / hide the details side-panel |
+| `/` | Focus the search box (substring match on Name + Exec) |
+| `e` | Open the user override in an inline editor (`Ctrl+S` save, `Esc` cancel) |
 | `Enter` | Open `.desktop` file preview (Esc/q/Enter to close) |
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |
@@ -140,7 +161,7 @@ let your launcher pick a terminal for you.
 
 ## Architecture
 
-Single Python file (~400 lines) with three concerns:
+Single Python file with three concerns:
 
 | Concern | Where |
 |---------|-------|
