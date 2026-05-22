@@ -2224,8 +2224,14 @@ class AutostartApp(App):
         # Prepend a warning glyph to critical entries — visible reminder
         # before you press Space.
         prefix = "[bold yellow]⚠[/] " if is_critical(e) else ""
+        # Cap the name column so one verbose service Description doesn't
+        # force the whole table into a horizontal scroll. 70 chars fits
+        # most terminals; the full name is still visible in the details
+        # pane on the right.
+        display_name = e.name if len(e.name) <= 70 else e.name[:69] + "…"
         name = (
-            f"{prefix}{e.name}" if e.enabled else f"[dim]{prefix}{e.name}[/]"
+            f"{prefix}{display_name}" if e.enabled
+            else f"[dim]{prefix}{display_name}[/]"
         )
         return icon, state, source, boot, name
 
