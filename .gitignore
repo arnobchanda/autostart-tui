@@ -6,3 +6,11 @@ venv/
 *.egg-info/
 .mypy_cache/
 .ruff_cache/
+
+# Local-only planning docs
+ROADMAP.md
+
+# Claude Code artifacts
+CLAUDE.md
+.claude/
+.claudeignore
