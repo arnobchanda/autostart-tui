@@ -10,7 +10,8 @@ you flip them on/off with a keypress.
 
 `gnome-session-properties` is dead. `stacer` is a 100MB GUI for a 50-line
 problem. KDE's autostart KCM needs all of KDE. This is a single Python
-file using only the standard library.
+file, run by `uv` with [Textual](https://textual.textualize.io/) for the
+UI — installs in seconds, no manual venv, no system-level packages.
 
 ## What it sees
 
@@ -52,9 +53,16 @@ update-desktop-database ~/.local/share/applications 2>/dev/null
 ```
 
 Then run `autostart-tui` from a terminal, or launch **Autostart Manager**
-from your app launcher (walker, rofi, fuzzel, GNOME, etc.). Requires
-Python 3.10+ and a Nerd-Font-capable terminal isn't needed — output is
-plain ASCII + box symbols.
+from your app launcher (walker, rofi, fuzzel, GNOME, etc.).
+
+The shebang line is `#!/usr/bin/env -S uv run --script`, so [uv] picks up
+the [PEP 723] inline metadata block at the top of the file
+(`requires-python = ">=3.10"`, `dependencies = ["textual>=0.86"]`),
+provisions an isolated Python and venv on first run, and caches both. No
+`pip install`, no `pyproject.toml`, no manual venv.
+
+[uv]: https://docs.astral.sh/uv/
+[PEP 723]: https://peps.python.org/pep-0723/
 
 ## Keys
 
@@ -63,10 +71,11 @@ plain ASCII + box symbols.
 | `↑` / `k` | Move up |
 | `↓` / `j` | Move down |
 | `g` / `Home` | Jump to top |
-| `G` / `End` | Jump to bottom |
+| `Shift+G` / `End` | Jump to bottom |
 | `Space` / `Enter` | Toggle entry |
 | `r` | Reload from disk |
 | `q` / `Esc` | Quit |
+| _click row_ | Move cursor (mouse supported via Textual) |
 
 ## Scope
 

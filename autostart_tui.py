@@ -1,7 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = [
+#     "textual>=0.86",
+# ]
 # ///
 """autostart-tui — manage Linux XDG autostart entries from a TUI.
 
@@ -20,14 +22,19 @@ never modified.
 from __future__ import annotations
 
 import configparser
-import curses
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.widgets import DataTable, Footer, Header
+
 USER_DIR = Path("~/.config/autostart").expanduser()
 SYSTEM_DIR = Path("/etc/xdg/autostart")
 
+
+# ---------- Model ----------
 
 @dataclass
 class Entry:
@@ -48,7 +55,7 @@ class Entry:
 
 def _read_desktop(path: Path) -> configparser.RawConfigParser | None:
     cp = configparser.RawConfigParser(interpolation=None, strict=False)
-    cp.optionxform = lambda s: s  # preserve case
+    cp.optionxform = lambda s: s  # preserve key case
     try:
         cp.read(path, encoding="utf-8")
     except (configparser.Error, OSError, UnicodeDecodeError):
@@ -132,8 +139,7 @@ def toggle(entry: Entry) -> None:
     cp["Desktop Entry"]["Hidden"] = "false" if new_enabled else "true"
     cp["Desktop Entry"]["X-GNOME-Autostart-enabled"] = "true" if new_enabled else "false"
 
-    # Hand-write to avoid configparser's "key = value" spacing — the desktop
-    # spec accepts it but most tools and humans expect "key=value".
+    # Hand-write to avoid configparser's "key = value" spacing.
     with open(entry.user_path, "w", encoding="utf-8") as f:
         for section in cp.sections():
             f.write(f"[{section}]\n")
@@ -146,92 +152,123 @@ def toggle(entry: Entry) -> None:
 
 # ---------- TUI ----------
 
-HELP = " ↑/↓ or j/k: move │ Space/Enter: toggle │ r: reload │ q: quit "
+class AutostartApp(App):
+    """Textual app: a table of autostart entries with toggle support."""
+
+    TITLE = "autostart-tui"
+    SUB_TITLE = "XDG autostart manager"
+
+    CSS = """
+    Screen {
+        background: $surface;
+    }
+
+    DataTable {
+        height: 1fr;
+    }
+
+    DataTable > .datatable--header {
+        text-style: bold;
+        background: $primary 40%;
+    }
+
+    DataTable > .datatable--cursor {
+        background: $accent 60%;
+        color: $text;
+    }
+    """
+
+    BINDINGS = [
+        Binding("space,enter", "toggle", "Toggle"),
+        Binding("r", "reload", "Reload"),
+        Binding("q,escape", "quit", "Quit"),
+        Binding("j", "down", "Down", show=False),
+        Binding("k", "up", "Up", show=False),
+        Binding("g,home", "top", "Top", show=False),
+        Binding("shift+g,end", "bottom", "Bottom", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entries: list[Entry] = []
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
+        yield DataTable(cursor_type="row", zebra_stripes=True)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_column("State", width=7)
+        table.add_column("Source", width=14)
+        table.add_column("Name", width=30)
+        table.add_column("Exec")
+        self._reload()
+
+    # --- actions ---
+
+    def action_toggle(self) -> None:
+        table = self.query_one(DataTable)
+        if not self.entries:
+            return
+        cursor_row = table.cursor_row
+        row_key = table.coordinate_to_cell_key((cursor_row, 0)).row_key
+        entry = next((e for e in self.entries if e.desktop_id == row_key.value), None)
+        if entry is None:
+            return
+        toggle(entry)
+        self.notify(
+            f"{'Enabled' if entry.enabled else 'Disabled'}: {entry.name}",
+            severity="information" if entry.enabled else "warning",
+            timeout=2.0,
+        )
+        self._refresh_row(table, cursor_row, entry)
+
+    def action_reload(self) -> None:
+        self._reload()
+        self.notify(f"Reloaded ({len(self.entries)} entries)", timeout=1.5)
+
+    def action_down(self) -> None:
+        self.query_one(DataTable).action_cursor_down()
+
+    def action_up(self) -> None:
+        self.query_one(DataTable).action_cursor_up()
+
+    def action_top(self) -> None:
+        self.query_one(DataTable).move_cursor(row=0)
+
+    def action_bottom(self) -> None:
+        table = self.query_one(DataTable)
+        if table.row_count:
+            table.move_cursor(row=table.row_count - 1)
+
+    # --- helpers ---
+
+    def _reload(self) -> None:
+        self.entries = discover()
+        table = self.query_one(DataTable)
+        cursor_row = table.cursor_row if table.row_count else 0
+        table.clear()
+        for e in self.entries:
+            table.add_row(*_row_cells(e), key=e.desktop_id)
+        if table.row_count:
+            table.move_cursor(row=min(cursor_row, table.row_count - 1))
+
+    def _refresh_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
+        cells = _row_cells(entry)
+        for col_idx, value in enumerate(cells):
+            table.update_cell_at((row_idx, col_idx), value)
 
 
-def _draw(stdscr, entries: list[Entry], idx: int, status: str) -> None:
-    stdscr.erase()
-    h, w = stdscr.getmaxyx()
-    # Writing to the bottom-right cell makes curses fail because it can't
-    # advance the cursor past it. Cap every write to w - 1.
-    cap = max(1, w - 1)
-
-    title = " autostart-tui — XDG autostart manager "
-    stdscr.attron(curses.A_REVERSE)
-    stdscr.addnstr(0, 0, title.ljust(cap), cap)
-    stdscr.attroff(curses.A_REVERSE)
-
-    header = f"  {'STATE':<6}  {'SOURCE':<12}  {'NAME':<28}  EXEC"
-    stdscr.addnstr(2, 0, header, cap, curses.A_BOLD)
-
-    list_top = 4
-    list_h = max(1, h - list_top - 3)
-    start = max(0, idx - list_h // 2)
-    start = min(start, max(0, len(entries) - list_h))
-
-    for i, e in enumerate(entries[start:start + list_h]):
-        row_idx = start + i
-        y = list_top + i
-        state = " ● ON" if e.enabled else " ○ OFF"
-        line = f"  {state:<6}  {e.source:<12}  {e.name[:28]:<28}  {e.exec_cmd}"
-        if row_idx == idx:
-            stdscr.attron(curses.A_REVERSE)
-            stdscr.addnstr(y, 0, line.ljust(cap), cap)
-            stdscr.attroff(curses.A_REVERSE)
-        else:
-            color = curses.color_pair(1 if e.enabled else 2)
-            stdscr.attron(color)
-            stdscr.addnstr(y, 0, line, cap)
-            stdscr.attroff(color)
-
-    if status:
-        stdscr.addnstr(h - 2, 0, status, cap, curses.A_DIM)
-    stdscr.attron(curses.A_REVERSE)
-    stdscr.addnstr(h - 1, 0, HELP.ljust(cap), cap)
-    stdscr.attroff(curses.A_REVERSE)
-    stdscr.refresh()
-
-
-def _run(stdscr) -> None:
-    curses.curs_set(0)
-    curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)
-    curses.init_pair(2, curses.COLOR_RED, -1)
-
-    entries = discover()
-    idx = 0
-    status = f"loaded {len(entries)} entries"
-
-    while True:
-        _draw(stdscr, entries, idx, status)
-        ch = stdscr.getch()
-
-        if ch in (ord("q"), 27):
-            break
-        if ch in (curses.KEY_UP, ord("k")):
-            idx = max(0, idx - 1)
-            status = ""
-        elif ch in (curses.KEY_DOWN, ord("j")):
-            idx = min(max(0, len(entries) - 1), idx + 1)
-            status = ""
-        elif ch in (curses.KEY_HOME, ord("g")):
-            idx = 0
-        elif ch in (curses.KEY_END, ord("G")):
-            idx = max(0, len(entries) - 1)
-        elif ch in (ord(" "), 10, 13):
-            if entries:
-                e = entries[idx]
-                toggle(e)
-                status = f"{'enabled' if e.enabled else 'disabled'}: {e.name}"
-        elif ch == ord("r"):
-            entries = discover()
-            idx = min(idx, max(0, len(entries) - 1))
-            status = f"reloaded ({len(entries)} entries)"
+def _row_cells(e: Entry) -> tuple[str, str, str, str]:
+    state = "[bold green]● ON[/]" if e.enabled else "[bold red]○ OFF[/]"
+    name = e.name if e.enabled else f"[dim]{e.name}[/]"
+    exec_cmd = e.exec_cmd if e.enabled else f"[dim]{e.exec_cmd}[/]"
+    return state, e.source, name, exec_cmd
 
 
 def main() -> None:
-    curses.wrapper(_run)
+    AutostartApp().run()
 
 
 if __name__ == "__main__":
