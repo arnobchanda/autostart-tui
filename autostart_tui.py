@@ -931,6 +931,7 @@ class AutostartApp(App):
             placeholder="search by name (Esc to clear, Enter to confirm)",
             id="search-input",
             classes="-hidden",
+            disabled=True,  # also prevents focus until action_search shows it
         )
         with Horizontal(id="main-row"):
             with TabbedContent(initial="autostart-tab", id="main-tabs"):
@@ -1075,6 +1076,7 @@ class AutostartApp(App):
 
     def action_search(self) -> None:
         inp = self.query_one("#search-input", Input)
+        inp.disabled = False
         inp.remove_class("-hidden")
         inp.focus()
 
@@ -1096,6 +1098,7 @@ class AutostartApp(App):
             self._populate("launcher")
             self._refresh_banner()
         inp.add_class("-hidden")
+        inp.disabled = True  # take it out of the focus chain again
         self._active_table().focus()
 
     def action_preview(self) -> None:
@@ -1140,6 +1143,7 @@ class AutostartApp(App):
         inp = self.query_one("#search-input", Input)
         inp.value = ""
         inp.add_class("-hidden")
+        inp.disabled = True
         self._populate("autostart")
         self._populate("launcher")
         self.notify("Filters cleared", timeout=1.0)
