@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """autostart-tui — manage Linux XDG autostart entries from a TUI.
 
 Lists desktop autostart entries from the standard XDG locations and lets
@@ -148,14 +152,17 @@ HELP = " ↑/↓ or j/k: move │ Space/Enter: toggle │ r: reload │ q: quit 
 def _draw(stdscr, entries: list[Entry], idx: int, status: str) -> None:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
+    # Writing to the bottom-right cell makes curses fail because it can't
+    # advance the cursor past it. Cap every write to w - 1.
+    cap = max(1, w - 1)
 
     title = " autostart-tui — XDG autostart manager "
     stdscr.attron(curses.A_REVERSE)
-    stdscr.addnstr(0, 0, title.ljust(w), w)
+    stdscr.addnstr(0, 0, title.ljust(cap), cap)
     stdscr.attroff(curses.A_REVERSE)
 
     header = f"  {'STATE':<6}  {'SOURCE':<12}  {'NAME':<28}  EXEC"
-    stdscr.addnstr(2, 0, header, w, curses.A_BOLD)
+    stdscr.addnstr(2, 0, header, cap, curses.A_BOLD)
 
     list_top = 4
     list_h = max(1, h - list_top - 3)
@@ -169,18 +176,18 @@ def _draw(stdscr, entries: list[Entry], idx: int, status: str) -> None:
         line = f"  {state:<6}  {e.source:<12}  {e.name[:28]:<28}  {e.exec_cmd}"
         if row_idx == idx:
             stdscr.attron(curses.A_REVERSE)
-            stdscr.addnstr(y, 0, line.ljust(w), w)
+            stdscr.addnstr(y, 0, line.ljust(cap), cap)
             stdscr.attroff(curses.A_REVERSE)
         else:
             color = curses.color_pair(1 if e.enabled else 2)
             stdscr.attron(color)
-            stdscr.addnstr(y, 0, line, w)
+            stdscr.addnstr(y, 0, line, cap)
             stdscr.attroff(color)
 
     if status:
-        stdscr.addnstr(h - 2, 0, status, w - 1, curses.A_DIM)
+        stdscr.addnstr(h - 2, 0, status, cap, curses.A_DIM)
     stdscr.attron(curses.A_REVERSE)
-    stdscr.addnstr(h - 1, 0, HELP.ljust(w), w)
+    stdscr.addnstr(h - 1, 0, HELP.ljust(cap), cap)
     stdscr.attroff(curses.A_REVERSE)
     stdscr.refresh()
 
