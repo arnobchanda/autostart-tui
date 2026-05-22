@@ -67,10 +67,19 @@ LAUNCHER_USER_WRITE_DIR = LAUNCHER_DIRS_USER[0]  # where overrides go
 
 THEME_FILE = Path("~/.config/omarchy/current/theme/alacritty.toml").expanduser()
 
+SYSTEMD_USER_DIRS_USER = [
+    Path("~/.config/systemd/user").expanduser(),
+]
+SYSTEMD_USER_DIRS_SYSTEM = [
+    Path("/etc/systemd/user"),
+    Path("/usr/lib/systemd/user"),
+]
+SYSTEMD_USER_WRITE_DIR = SYSTEMD_USER_DIRS_USER[0]
+
 
 # ---------- Model ----------
 
-EntryKind = Literal["autostart", "launcher"]
+EntryKind = Literal["autostart", "launcher", "service"]
 ProgressFn = Callable[[], None] | None
 
 
@@ -469,6 +478,160 @@ def match_boot_time(entry: Entry, boot: dict[str, int]) -> int | None:
         if key.lower() in boot:
             return boot[key.lower()]
     return None
+
+
+# ---------- Systemd user units ----------
+
+# systemctl reports a status per unit file; we only care about units
+# that are on/off in a way the user can meaningfully toggle. Static,
+# alias, masked, transient, etc. don't fit our model — surfacing them
+# in the table would inflate the list and confuse the toggle UX.
+_TOGGLEABLE_UNIT_STATES = {"enabled", "disabled"}
+
+
+def _systemctl_unit_states() -> dict[str, str]:
+    """One bulk call to `systemctl --user list-unit-files` returning
+    {unit_name: state}. Empty dict if systemctl isn't available."""
+    try:
+        res = subprocess.run(
+            [
+                "systemctl", "--user", "list-unit-files",
+                "--type=service", "--no-legend", "--no-pager",
+                "--plain",
+            ],
+            capture_output=True, timeout=5, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    if res.returncode != 0:
+        return {}
+    states: dict[str, str] = {}
+    for line in res.stdout.decode(errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            states[parts[0]] = parts[1]
+    return states
+
+
+def _parse_unit_file(path: Path) -> tuple[str, str]:
+    """Pull Description= and ExecStart= from a .service file. Both
+    blank if the file can't be parsed or doesn't have them."""
+    cp = configparser.RawConfigParser(interpolation=None, strict=False)
+    cp.optionxform = lambda s: s
+    try:
+        cp.read(path, encoding="utf-8")
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        return "", ""
+    description = ""
+    exec_start = ""
+    if cp.has_section("Unit"):
+        description = cp["Unit"].get("Description", "").strip()
+    if cp.has_section("Service"):
+        exec_start = cp["Service"].get("ExecStart", "").strip()
+    return description, exec_start
+
+
+def discover_systemd_user(progress: ProgressFn = None) -> list[Entry]:
+    """Walk the standard systemd user-unit directories, build one
+    Entry per unique unit name. State comes from a single
+    `systemctl --user list-unit-files` invocation rather than one
+    `is-enabled` call per unit."""
+    states = _systemctl_unit_states()
+    if not states:
+        return []
+    by_name: dict[str, Entry] = {}
+    # System dirs first so user-side .service files override (same
+    # shadow rules as XDG, though for systemd the user file genuinely
+    # replaces system: that's how `systemctl edit` works.)
+    for d in SYSTEMD_USER_DIRS_SYSTEM:
+        if not d.is_dir():
+            continue
+        for p in sorted(d.glob("*.service")):
+            if progress:
+                progress()
+            name = p.name
+            # Skip template units (e.g. `foo@.service`) — they can't be
+            # enabled/disabled without an instance name.
+            if name.endswith("@.service"):
+                continue
+            state = states.get(name)
+            if state not in _TOGGLEABLE_UNIT_STATES:
+                continue
+            description, exec_start = _parse_unit_file(p)
+            by_name.setdefault(name, Entry(
+                kind="service",
+                desktop_id=name,
+                name=description or name.removesuffix(".service"),
+                exec_cmd=exec_start,
+                icon_name="",
+                user_path=None,
+                system_path=p,
+                enabled=(state == "enabled"),
+            ))
+    for d in SYSTEMD_USER_DIRS_USER:
+        if not d.is_dir():
+            continue
+        for p in sorted(d.glob("*.service")):
+            if progress:
+                progress()
+            name = p.name
+            # Skip template units (e.g. `foo@.service`) — they can't be
+            # enabled/disabled without an instance name.
+            if name.endswith("@.service"):
+                continue
+            state = states.get(name)
+            if state not in _TOGGLEABLE_UNIT_STATES:
+                continue
+            description, exec_start = _parse_unit_file(p)
+            existing = by_name.get(name)
+            if existing:
+                existing.user_path = p
+                # Prefer the user file's Description/ExecStart if set.
+                if description:
+                    existing.name = description
+                if exec_start:
+                    existing.exec_cmd = exec_start
+            else:
+                by_name[name] = Entry(
+                    kind="service",
+                    desktop_id=name,
+                    name=description or name.removesuffix(".service"),
+                    exec_cmd=exec_start,
+                    icon_name="",
+                    user_path=p,
+                    system_path=None,
+                    enabled=(state == "enabled"),
+                )
+    return sorted(by_name.values(), key=lambda e: e.name.lower())
+
+
+def toggle_systemd_user(entry: Entry) -> None:
+    """Flip enabled state via systemctl. Does not start/stop the
+    running unit — only changes whether it starts at next login.
+    Raises RuntimeError on failure so the UI can surface the error
+    instead of silently leaving the row in a stale state."""
+    new_enabled = not entry.enabled
+    verb = "enable" if new_enabled else "disable"
+    try:
+        res = subprocess.run(
+            ["systemctl", "--user", verb, entry.desktop_id],
+            capture_output=True, timeout=5, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    if res.returncode != 0:
+        raise RuntimeError(
+            res.stderr.decode(errors="replace").strip() or
+            f"systemctl --user {verb} {entry.desktop_id} failed"
+        )
+    entry.enabled = new_enabled
+
+
+_TOGGLE_FN: dict[EntryKind, Callable[[Entry], None]] = {
+    "autostart": toggle_autostart,
+    "launcher": toggle_launcher,
+    "service": toggle_systemd_user,
+}
 
 
 # ---------- Override file helpers ----------
@@ -1217,7 +1380,9 @@ class AutostartApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.entries: dict[EntryKind, list[Entry]] = {"autostart": [], "launcher": []}
+        self.entries: dict[EntryKind, list[Entry]] = {
+            "autostart": [], "launcher": [], "service": []
+        }
         self.state_filter: StateFilter = "all"
         self.source_filter: SourceFilter = "all"
         # Resolved accent color used by row icons. Overridden in on_mount once
@@ -1305,10 +1470,15 @@ class AutostartApp(App):
 
     def _apply_toggle(self, entry: Entry) -> None:
         kind = entry.kind
-        (toggle_autostart if kind == "autostart" else toggle_launcher)(entry)
-        verb = "Enabled" if entry.enabled else ("Disabled" if kind == "autostart" else "Hidden")
-        if kind == "launcher" and entry.enabled:
-            verb = "Shown"
+        try:
+            _TOGGLE_FN[kind](entry)
+        except (OSError, RuntimeError) as exc:
+            self.notify(f"Toggle failed: {exc}", severity="error", timeout=5.0)
+            return
+        if entry.enabled:
+            verb = "Shown" if kind == "launcher" else "Enabled"
+        else:
+            verb = "Hidden" if kind == "launcher" else "Disabled"
         self._last_toggle_id = (kind, entry.desktop_id)
         self.notify(
             f"{verb}: {entry.name}  ·  press z to undo",
@@ -1341,7 +1511,11 @@ class AutostartApp(App):
             self.notify("Entry no longer present", severity="warning", timeout=1.0)
             self._last_toggle_id = None
             return
-        (toggle_autostart if kind == "autostart" else toggle_launcher)(entry)
+        try:
+            _TOGGLE_FN[kind](entry)
+        except (OSError, RuntimeError) as exc:
+            self.notify(f"Undo failed: {exc}", severity="error", timeout=5.0)
+            return
         self._last_toggle_id = None
         self.notify(f"Undone: {entry.name}", timeout=2.0)
         no_filter = (
