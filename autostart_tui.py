@@ -1797,6 +1797,12 @@ class AutostartApp(App):
             diff = render_override_diff(e)
             if diff:
                 lines += ["", "[bold]Override diff[/]", diff]
+        findings = diagnose(e)
+        if findings:
+            lines += ["", "[bold]Diagnostics[/]"]
+            for d in findings:
+                colour = "red" if d.severity == "error" else "yellow"
+                lines.append(f"[{colour}]• {d.message}[/]")
         return "\n".join(lines)
 
 
