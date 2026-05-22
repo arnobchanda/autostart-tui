@@ -801,6 +801,16 @@ class AutostartApp(App):
         self._update_preview()
         self._update_details()
 
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        # Fires on mouse clicks AND keyboard switches, so it catches what
+        # the action_* keybindings can't (clicking a tab header with the
+        # mouse never triggers action_show_tab).
+        self._active_table().focus()
+        self._update_preview()
+        self._update_details()
+
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         # Fires when DataTable has focus and the user presses Enter (or
         # double-clicks a row). Open the preview modal from here so the
