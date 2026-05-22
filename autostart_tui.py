@@ -2132,13 +2132,14 @@ class AutostartApp(App):
 
     def _format_details(self, e: Entry) -> str:
         glyph = icon_to_glyph(e.icon_name)
-        if e.kind == "autostart":
-            state = (
-                "[bold green]● ENABLED[/]" if e.enabled else "[bold red]○ DISABLED[/]"
-            )
-        else:
+        if e.kind == "launcher":
             state = (
                 "[bold green]● VISIBLE[/]" if e.enabled else "[bold red]○ HIDDEN[/]"
+            )
+        else:
+            # autostart + service both use enabled/disabled vocabulary
+            state = (
+                "[bold green]● ENABLED[/]" if e.enabled else "[bold red]○ DISABLED[/]"
             )
         # Pull Comment / Categories from whichever .desktop file we have
         path = e.user_path or e.system_path
@@ -2195,8 +2196,11 @@ class AutostartApp(App):
 
 
     def _row_cells(self, e: Entry) -> tuple[str, str, str, str, str]:
-        on_label = " ● ON " if e.kind == "autostart" else " ● SHOW"
-        off_label = " ○ OFF" if e.kind == "autostart" else " ○ HIDE"
+        if e.kind == "launcher":
+            on_label, off_label = " ● SHOW", " ○ HIDE"
+        else:
+            # autostart + service both use ON/OFF as the column glyph
+            on_label, off_label = " ● ON ", " ○ OFF"
         state = (
             f"[bold green]{on_label}[/]" if e.enabled else f"[bold red]{off_label}[/]"
         )
