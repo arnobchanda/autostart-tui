@@ -103,8 +103,10 @@ row across the screen. Press `r` to re-sort.
 - **Desktop-file preview**: press `Enter` on any row to open a modal
   showing the raw `.desktop` file with INI syntax highlighting and line
   numbers
-- **Inline editor**: press `e` to edit the user override in-place
-  (`Ctrl+S` to save, `Esc` to cancel) without leaving the TUI
+- **Edit in `$EDITOR`**: press `e` to suspend the TUI and open the
+  user override in your usual editor (vim, helix, zed, …; falls
+  back to `vi`). On exit, the TUI reloads automatically and runs
+  `systemctl --user daemon-reload` for service entries.
 - **Details side-panel** (`i`) showing Exec, file paths, override
   effect, and a parsed key-level diff against the system file
 - **Diagnostics**: when something is wrong with an entry — missing
@@ -191,7 +193,7 @@ let your launcher pick a terminal for you.
 | `z` | Undo the last toggle |
 | `i` | Show / hide the details side-panel |
 | `/` | Focus the search box (substring match on Name + Exec) |
-| `e` | Open the user override in an inline editor (`Ctrl+S` save, `Esc` cancel) |
+| `e` | Open the user override in `$EDITOR` (falls back to `vi`); reload + daemon-reload on exit |
 | `x` | Reset to system defaults — delete the user override for this entry |
 | `v` | Enter visual mode — `j`/`k` to extend, `space` toggles all selected, `Esc` cancels |
 | `Enter` | Open `.desktop` file preview (Esc/q/Enter to close) |
