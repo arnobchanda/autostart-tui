@@ -1258,15 +1258,7 @@ class AutostartApp(App):
         color: $foreground;
     }
 
-    #exec-preview {
-        height: 1;
-        padding: 0 1;
-        background: $panel;
-        color: $accent;
-        border-top: solid $primary 40%;
-    }
-
-    #boot-summary {
+#boot-summary {
         height: auto;
         padding: 0 1;
         background: $panel;
@@ -1382,7 +1374,6 @@ class AutostartApp(App):
                     "[dim italic]Loading…[/]", id="details-content", markup=True
                 )
         yield Static("", id="tab-description")
-        yield Static("", id="exec-preview", markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1398,16 +1389,12 @@ class AutostartApp(App):
         ):
             table = self.query_one(tid, DataTable)
             table.add_column(" ", width=3)  # icon glyph
-            table.add_column("State", width=8)
-            table.add_column("Source", width=14)
             table.add_column("Boot", width=15)
-            table.add_column("Name")
+            table.add_column("Name / Exec")
+            table.add_column("State / Source", width=14)
             table.loading = True  # built-in spinner overlay
 
         self._active_table().focus()
-        self.query_one("#exec-preview", Static).update(
-            "[dim italic]Scanning desktop entries…[/]"
-        )
         self._refresh_tab_description()
         self._refresh_banner()
         self._discover_all()
@@ -2011,13 +1998,11 @@ class AutostartApp(App):
         )
 
     def _set_scan_progress(self, current: int, total: int) -> None:
-        bar_width = 20
-        filled = int(bar_width * current / total)
-        bar = "█" * filled + "░" * (bar_width - filled)
-        self.query_one("#exec-preview", Static).update(
-            f"[dim italic]Scanning desktop entries…  [/]"
-            f"[{self._accent_color}]{bar}[/]  [dim]{current}/{total}[/]"
-        )
+        # Scan-progress bar used to live in the bottom strip, but that
+        # widget was removed when row layout went two-line. DataTable's
+        # built-in `loading = True` spinner overlay covers initial
+        # discovery; we no longer surface per-file progress here.
+        return
 
     def _on_discovery_done(
         self,
@@ -2056,7 +2041,7 @@ class AutostartApp(App):
         cursor_row = table.cursor_row if table.row_count else 0
         table.clear()
         for e in self._filtered(kind):
-            table.add_row(*self._row_cells(e), key=e.desktop_id)
+            table.add_row(*self._row_cells(e), key=e.desktop_id, height=2)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
         if kind in ("autostart", "service"):
@@ -2081,7 +2066,7 @@ class AutostartApp(App):
         ]
         rows.sort(key=lambda e: e.boot_ms or 0, reverse=True)
         for e in rows:
-            table.add_row(*self._row_cells(e), key=e.desktop_id)
+            table.add_row(*self._row_cells(e), key=e.desktop_id, height=2)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
         self._refresh_boot_summary()
@@ -2228,13 +2213,9 @@ class AutostartApp(App):
         return None
 
     def _update_preview(self) -> None:
-        preview = self.query_one("#exec-preview", Static)
-        entry = self._current_entry()
-        if entry is None:
-            preview.update("")
-            return
-        cmd = entry.exec_cmd or "[dim](no Exec= field)[/]"
-        preview.update(f"[b]$[/b] {cmd}")
+        # No-op kept for callers — the per-row exec line now lives in
+        # the table itself, so the dedicated preview strip was dropped.
+        pass
 
     def _update_details(self) -> None:
         widget = self.query_one("#details-content", Static)
@@ -2309,11 +2290,21 @@ class AutostartApp(App):
         return "\n".join(lines)
 
 
-    def _row_cells(self, e: Entry) -> tuple[str, str, str, str, str]:
+    def _row_cells(self, e: Entry) -> tuple[str, str, str, str]:
+        """Build the four cells for a two-line card row.
+
+        Layout per row (height=2):
+            col 1: icon glyph (line 1 only)
+            col 2: boot bar  (line 1 only)
+            col 3: name  / dim Exec
+            col 4: state / dim source
+
+        Source folds under State on line 2 — same axis (persistent
+        identity) — so we don't need a dedicated Source column.
+        """
         if e.kind == "launcher":
             on_label, off_label = " ● SHOW", " ○ HIDE"
         else:
-            # autostart + service both use ON/OFF as the column glyph
             on_label, off_label = " ● ON ", " ○ OFF"
         state = (
             f"[bold green]{on_label}[/]" if e.enabled else f"[bold red]{off_label}[/]"
@@ -2324,30 +2315,29 @@ class AutostartApp(App):
             if e.enabled
             else f"[dim]{glyph}[/]"
         )
-        # Source colors: user = cyan (the user's own choice), system = dim
-        # (background plumbing), user+system = magenta (user overrides system).
         source_color = {
             "user": "cyan",
             "system": "gray50",
             "user+system": "magenta",
         }.get(e.source, "white")
-        source = f"[{source_color}]{e.source}[/]"
-        if not e.enabled:
-            source = f"[dim]{source}[/]"
-        boot = _boot_cell(e.boot_ms)
-        # Prepend a warning glyph to critical entries — visible reminder
-        # before you press Space.
+        # Cap both name and exec at 67 chars so a verbose Description
+        # or long Exec line doesn't force the table into horizontal
+        # scroll. Full text still visible in the details pane.
         prefix = "[bold yellow]⚠[/] " if is_critical(e) else ""
-        # Cap the name column so one verbose service Description doesn't
-        # force the whole table into a horizontal scroll. 67 chars fits
-        # most terminals; the full name is still visible in the details
-        # pane on the right.
         display_name = e.name if len(e.name) <= 67 else e.name[:66] + "…"
-        name = (
-            f"{prefix}{display_name}" if e.enabled
-            else f"[dim]{prefix}{display_name}[/]"
-        )
-        return icon, state, source, boot, name
+        exec_disp = e.exec_cmd or "—"
+        if len(exec_disp) > 67:
+            exec_disp = exec_disp[:66] + "…"
+        if e.enabled:
+            name_line = f"{prefix}{display_name}"
+            exec_line = f"[dim]{exec_disp}[/]"
+            source_line = f"[{source_color}]{e.source}[/]"
+        else:
+            name_line = f"[dim]{prefix}{display_name}[/]"
+            exec_line = f"[dim]{exec_disp}[/]"
+            source_line = f"[dim]{e.source}[/]"
+        boot = _boot_cell(e.boot_ms)
+        return icon, boot, f"{name_line}\n{exec_line}", f"{state}\n{source_line}"
 
 
 def main() -> None:
