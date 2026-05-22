@@ -4,7 +4,7 @@ Version=1.0
 Name=Autostart Manager
 GenericName=Startup & Launcher Apps
 Comment=Enable or disable XDG autostart entries and launcher visibility
-Exec=ghostty --gtk-single-instance=false --class=autostart-tui --title=autostart-tui -e autostart-tui
+Exec=omarchy-launch-or-focus-tui autostart-tui
 Icon=system-run
 Terminal=false
 Categories=System;Settings;

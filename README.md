@@ -77,17 +77,20 @@ No `pip install`, no `pyproject.toml`, no manual venv.
 [uv]: https://docs.astral.sh/uv/
 [PEP 723]: https://peps.python.org/pep-0723/
 
-### Floating window on Hyprland
+### Floating window on Omarchy / Hyprland
 
-The `.desktop` Exec line runs `ghostty --class=autostart-tui -e
-autostart-tui`, so the terminal window gets a dedicated WM class.
-Copy the snippet from `contrib/hyprland-windowrules.conf` into a
-sourced `~/.config/hypr/*.conf` and `hyprctl reload` to make the
-window float, size to 60×70%, and center on screen.
+The `.desktop` Exec line runs `omarchy-launch-or-focus-tui autostart-tui`,
+which uses `xdg-terminal-exec` under the hood and sets the window's
+Wayland app-id to `org.omarchy.autostart-tui`. Copy the snippet from
+`contrib/hyprland-windowrules.conf` into a sourced `~/.config/hypr/*.conf`
+and `hyprctl reload` to make the window float, size to 60×70%, and
+center on screen.
 
-If you don't use Hyprland: set `Terminal=true` and remove the ghostty
-prefix from `Exec=` to fall back to whatever terminal your launcher
-picks.
+If you don't use Omarchy: change `Exec=` to whatever launches your
+preferred terminal with this script, e.g.
+`Exec=ghostty --class=autostart-tui -e autostart-tui` (set
+`Terminal=false`), or `Exec=autostart-tui` with `Terminal=true` to let
+your launcher pick.
 
 ## Keys
 
