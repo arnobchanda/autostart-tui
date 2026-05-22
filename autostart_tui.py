@@ -1087,19 +1087,31 @@ ICON_GLYPH_MAP: list[tuple[str, str]] = [
 DEFAULT_GLYPH = "󰍹"  # monitor
 
 
-def _boot_cell(boot_ms: int | None, max_ms: int | None = None) -> str:
-    """6-cell block bar + ms label, colored by speed bucket.
+def _fmt_ms(ms: int) -> str:
+    """Compact human-readable duration. Stays in ms below 1s; switches
+    to seconds with one decimal in the 1-10s range; drops the decimal
+    at 10s+."""
+    if ms < 1000:
+        return f"{ms}ms"
+    if ms < 10_000:
+        return f"{ms / 1000:.1f}s"
+    return f"{ms / 1000:.0f}s"
 
-    Length scales relative to `max_ms` (the heaviest entry on this
-    machine) so the bar communicates *relative* cost: full bar = the
-    worst offender, half bar = half as expensive, etc. Without a
-    relative scale every typical entry (<200ms) looked identical.
+
+def _boot_cell(boot_ms: int | None, scale_ms: int | None = None) -> str:
+    """6-cell block bar + duration label, colored by speed bucket.
+
+    `scale_ms` is the value that fills the bar (typically the 90th
+    percentile across all known entries — see _compute_boot_scale).
+    Anything above saturates at full bar; that lets the bar
+    differentiate the bulk of entries without one 15s outlier
+    squashing everyone else to 1 cell.
 
     Empty if no data."""
     if boot_ms is None:
         return ""
     bar_width = 6
-    scale = max_ms if max_ms and max_ms > 0 else max(boot_ms, 1)
+    scale = scale_ms if scale_ms and scale_ms > 0 else max(boot_ms, 1)
     filled = min(bar_width, max(1, int(bar_width * boot_ms / scale)))
     bar = "█" * filled + "░" * (bar_width - filled)
     if boot_ms < 100:
@@ -1108,7 +1120,21 @@ def _boot_cell(boot_ms: int | None, max_ms: int | None = None) -> str:
         color = "yellow"
     else:
         color = "red"
-    return f"[{color}]{bar}[/] {boot_ms}ms"
+    return f"[{color}]{bar}[/] {_fmt_ms(boot_ms)}"
+
+
+def _compute_boot_scale(values: list[int]) -> int:
+    """Pick a bar-scale value from the distribution: 90th percentile
+    rounded up to the next 50 ms. Outliers (slow boot, one-off
+    services) still saturate at full bar, but the typical cluster of
+    entries gets differentiated. Empty input → 0 (caller falls back
+    to per-entry scaling)."""
+    if not values:
+        return 0
+    s = sorted(values)
+    idx = max(0, int(round(0.9 * (len(s) - 1))))
+    p90 = s[idx]
+    return max(50, ((p90 + 49) // 50) * 50)
 
 
 def icon_to_glyph(icon_name: str) -> str:
@@ -1624,10 +1650,11 @@ class AutostartApp(App):
         # every mutation. Each profile records the *disabled* desktop_ids
         # per kind so applying it = batch toggle to flip mismatches.
         self._profiles: list[Profile] = load_profiles()
-        # Heaviest boot_ms across all kinds — used by _boot_cell so the
-        # bar length is meaningful relative to *this* machine's
-        # distribution rather than a hardcoded "800 ms = full bar".
-        self._max_boot_ms: int = 0
+        # Value (ms) that fills the boot bar — typically the 90th
+        # percentile of boot times. Picking the percentile (not the
+        # max) prevents one slow outlier from squashing the bulk of
+        # entries onto a single cell.
+        self._boot_scale_ms: int = 0
 
     def compose(self) -> ComposeResult:
         yield Banner()
@@ -2388,13 +2415,14 @@ class AutostartApp(App):
         self.entries["autostart"] = autostart
         self.entries["launcher"] = launcher
         self.entries["service"] = service
-        # Heaviest entry sets the scale for every boot bar so they
-        # render relatively rather than against an arbitrary 800 ms.
-        self._max_boot_ms = max(
-            (e.boot_ms for e in (*autostart, *launcher, *service)
-             if e.boot_ms is not None),
-            default=0,
-        )
+        # Boot bar scale: 90th percentile across all known entries.
+        # Outliers (e.g. a 15s OneDrive sync) still saturate at full
+        # bar, but the typical cluster of 50–200 ms entries gets
+        # meaningfully differentiated instead of all clamping to 1 cell.
+        self._boot_scale_ms = _compute_boot_scale([
+            e.boot_ms for e in (*autostart, *launcher, *service)
+            if e.boot_ms is not None
+        ])
         self._populate("autostart")  # also populates boot-table
         self._populate("launcher")
         self._populate("service")    # re-populates boot-table again
@@ -2472,8 +2500,9 @@ class AutostartApp(App):
         saved_ms = sum(e.boot_ms or 0 for e in with_data if not e.enabled)
         unmatched = sum(1 for e in pool if e.boot_ms is None)
         parts = [
-            f"[bold]Enabled boot cost:[/] [{self._accent_color}]{enabled_ms} ms[/]",
-            f"[bold green]Disabled saves:[/] {saved_ms} ms",
+            f"[bold]Enabled boot cost:[/] "
+            f"[{self._accent_color}]{_fmt_ms(enabled_ms)}[/]",
+            f"[bold green]Disabled saves:[/] {_fmt_ms(saved_ms)}",
         ]
         if unmatched:
             parts.append(f"[dim]{unmatched} unmatched[/]")
@@ -2652,7 +2681,7 @@ class AutostartApp(App):
             lines += [
                 "",
                 "[bold]Boot cost[/]",
-                _boot_cell(e.boot_ms, self._max_boot_ms),
+                _boot_cell(e.boot_ms, self._boot_scale_ms),
             ]
         if is_critical(e):
             lines += [
@@ -2699,7 +2728,7 @@ class AutostartApp(App):
         source = f"[{source_color}]{e.source}[/]"
         if not e.enabled:
             source = f"[dim]{source}[/]"
-        boot = _boot_cell(e.boot_ms, self._max_boot_ms)
+        boot = _boot_cell(e.boot_ms, self._boot_scale_ms)
         prefix = "[bold yellow]⚠[/] " if is_critical(e) else ""
         display_name = e.name if len(e.name) <= 67 else e.name[:66] + "…"
         name = (
