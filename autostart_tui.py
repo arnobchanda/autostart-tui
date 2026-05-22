@@ -327,6 +327,11 @@ CRITICAL_PATTERNS: list[str] = [
 
 
 def is_critical(e: Entry) -> bool:
+    # Only meaningful for autostart entries. Hiding a launcher entry just
+    # removes it from app-menu listings — the underlying app isn't affected,
+    # so there's no session-breaking risk.
+    if e.kind != "autostart":
+        return False
     hay = f"{e.desktop_id} {e.exec_cmd}".lower()
     return any(p in hay for p in CRITICAL_PATTERNS)
 
