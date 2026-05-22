@@ -75,6 +75,11 @@ overrides land in `~/.local/share/applications/`.
   (`Ctrl+S` to save, `Esc` to cancel) without leaving the TUI
 - **Details side-panel** (`i`) showing Exec, file paths, override
   effect, and a parsed key-level diff against the system file
+- **Diagnostics**: when something is wrong with an entry — missing
+  `Exec` / `TryExec` binary, `OnlyShowIn` / `NotShowIn` mismatch with
+  `$XDG_CURRENT_DESKTOP`, missing required keys — the details pane
+  shows a red Diagnostics block explaining exactly why a launcher
+  would drop the entry
 - **Search** (`/`) — substring match on Name + Exec, layered on top of
   state and source filters
 - **Undo** (`z`) — reverts the last toggle, with a short toast
