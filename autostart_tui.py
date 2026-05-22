@@ -23,9 +23,12 @@ loaded into a Textual theme so the TUI tracks `omarchy theme set ...`.
 from __future__ import annotations
 
 import configparser
+import difflib
+import re
 import shutil
+import subprocess
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -80,6 +83,9 @@ class Entry:
     user_path: Path | None
     system_path: Path | None
     enabled: bool  # for launcher entries: "visible in launcher"
+    # Populated after discovery: best-match boot time (in milliseconds) from
+    # systemd-analyze blame, or None if no matching unit was found.
+    boot_ms: int | None = field(default=None)
 
     @property
     def source(self) -> str:
@@ -236,30 +242,20 @@ def _count_desktop_files() -> int:
 
 
 def toggle_autostart(entry: Entry) -> None:
-    AUTOSTART_USER.mkdir(parents=True, exist_ok=True)
-    if entry.user_path is None:
-        assert entry.system_path is not None
-        target = AUTOSTART_USER / f"{entry.desktop_id}.desktop"
-        shutil.copy2(entry.system_path, target)
-        entry.user_path = target
-    cp = _read_desktop(entry.user_path)
+    path = ensure_user_override(entry)
+    cp = _read_desktop(path)
     if cp is None:
         return
     new = not entry.enabled
     cp["Desktop Entry"]["Hidden"] = "false" if new else "true"
     cp["Desktop Entry"]["X-GNOME-Autostart-enabled"] = "true" if new else "false"
-    _write_desktop(entry.user_path, cp)
+    _write_desktop(path, cp)
     entry.enabled = new
 
 
 def toggle_launcher(entry: Entry) -> None:
-    LAUNCHER_USER_WRITE_DIR.mkdir(parents=True, exist_ok=True)
-    if entry.user_path is None:
-        assert entry.system_path is not None
-        target = LAUNCHER_USER_WRITE_DIR / f"{entry.desktop_id}.desktop"
-        shutil.copy2(entry.system_path, target)
-        entry.user_path = target
-    cp = _read_desktop(entry.user_path)
+    path = ensure_user_override(entry)
+    cp = _read_desktop(path)
     if cp is None:
         return
     new_visible = not entry.enabled
@@ -267,7 +263,7 @@ def toggle_launcher(entry: Entry) -> None:
     # If a system file used Hidden=true to suppress, clear it on the override.
     if not new_visible:
         cp["Desktop Entry"]["Hidden"] = "false"
-    _write_desktop(entry.user_path, cp)
+    _write_desktop(path, cp)
     entry.enabled = new_visible
 
 
@@ -305,6 +301,144 @@ def load_omarchy_theme() -> Theme | None:
         panel=normal.get("black", "#181825"),
         dark=True,
     )
+
+
+# ---------- Risk / criticality ----------
+
+# Substrings that mark an entry as "critical to session" — disabling these
+# from the TUI pops a confirmation dialog first, since silently breaking
+# audio / input / secrets / portals tends to cost a reboot to recover.
+CRITICAL_PATTERNS: list[str] = [
+    "pipewire",
+    "wireplumber",
+    "pulseaudio",
+    "keyring",
+    "secret",
+    "fcitx",
+    "ibus",
+    "input-method",
+    "xdg-desktop-portal",
+    "polkit",
+    "wayland-session",
+    "gnome-session",
+    "walker",
+    "hyprland",
+]
+
+
+def is_critical(e: Entry) -> bool:
+    hay = f"{e.desktop_id} {e.exec_cmd}".lower()
+    return any(p in hay for p in CRITICAL_PATTERNS)
+
+
+# ---------- Boot times (systemd-analyze) ----------
+
+_BLAME_LINE_RE = re.compile(r"\s*([\d.]+)(ms|s|min)\s+(.+)")
+
+
+def _parse_blame_output(out: str) -> dict[str, int]:
+    times: dict[str, int] = {}
+    for line in out.splitlines():
+        m = _BLAME_LINE_RE.match(line)
+        if not m:
+            continue
+        val, unit, name = m.groups()
+        ms = float(val)
+        if unit == "s":
+            ms *= 1000
+        elif unit == "min":
+            ms *= 60_000
+        times[name.strip().lower()] = int(ms)
+    return times
+
+
+def load_boot_times() -> dict[str, int]:
+    """Best-effort scrape of systemd-analyze blame for both --user and the
+    system instance. Silently returns {} if systemd isn't there."""
+    times: dict[str, int] = {}
+    for argv in (
+        ["systemd-analyze", "blame", "--user"],
+        ["systemd-analyze", "blame"],
+    ):
+        try:
+            res = subprocess.run(
+                argv, capture_output=True, timeout=4, check=False
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if res.returncode != 0:
+            continue
+        times.update(_parse_blame_output(res.stdout.decode(errors="replace")))
+    return times
+
+
+def match_boot_time(entry: Entry, boot: dict[str, int]) -> int | None:
+    """Heuristic: try desktop_id, name, and Exec basename against known
+    unit names with common suffixes including the XDG autostart wrapper
+    pattern systemd uses (`app-<id>@autostart.service`, with `-` escaped
+    to `\\x2d` in the parts derived from the entry name)."""
+    if not boot:
+        return None
+    did = entry.desktop_id
+    did_l = did.lower()
+    candidates: list[str] = []
+    # XDG autostart wrappers
+    for variant in {did, did_l}:
+        candidates.append(f"app-{variant}@autostart.service")
+        candidates.append(f"app-{variant.replace('-', r'\x2d')}@autostart.service")
+    # Direct unit names
+    candidates += [did_l, did_l + ".service", did_l + ".target"]
+    # Binary basename from Exec
+    if entry.exec_cmd:
+        bin_name = entry.exec_cmd.split()[0].split("/")[-1].lower()
+        if bin_name and bin_name not in ("env", "sh", "bash"):
+            candidates += [bin_name, bin_name + ".service"]
+    # Slugified display name
+    slug = re.sub(r"[^a-z0-9]+", "-", entry.name.lower()).strip("-")
+    if slug:
+        candidates += [slug, slug + ".service"]
+    for key in candidates:
+        if key.lower() in boot:
+            return boot[key.lower()]
+    return None
+
+
+# ---------- Override file helpers ----------
+
+def ensure_user_override(entry: Entry) -> Path:
+    """Make sure entry.user_path exists, copying from system_path if not."""
+    if entry.user_path is not None:
+        return entry.user_path
+    assert entry.system_path is not None
+    target_dir = AUTOSTART_USER if entry.kind == "autostart" else LAUNCHER_USER_WRITE_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{entry.desktop_id}.desktop"
+    shutil.copy2(entry.system_path, target)
+    entry.user_path = target
+    return target
+
+
+def render_override_diff(entry: Entry) -> str:
+    """Unified diff of system → user override, with +/- colorized."""
+    if entry.user_path is None or entry.system_path is None:
+        return ""
+    try:
+        sys_lines = entry.system_path.read_text(errors="replace").splitlines()
+        usr_lines = entry.user_path.read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    diff = difflib.unified_diff(sys_lines, usr_lines, lineterm="", n=1)
+    out: list[str] = []
+    for raw in diff:
+        if raw.startswith("---") or raw.startswith("+++") or raw.startswith("@@"):
+            continue
+        if raw.startswith("+"):
+            out.append(f"[green]{raw}[/]")
+        elif raw.startswith("-"):
+            out.append(f"[red]{raw}[/]")
+        else:
+            out.append(f"[dim]{raw}[/]")
+    return "\n".join(out)
 
 
 # ---------- Glyph mapping ----------
@@ -388,6 +522,23 @@ ICON_GLYPH_MAP: list[tuple[str, str]] = [
 DEFAULT_GLYPH = "󰍹"  # monitor
 
 
+def _boot_cell(boot_ms: int | None) -> str:
+    """6-cell block bar + ms label, colored by speed bucket. Empty if no data."""
+    if boot_ms is None:
+        return ""
+    bar_width = 6
+    # 800 ms → full bar; anything slower still saturates at full.
+    filled = min(bar_width, max(1, int(bar_width * boot_ms / 800)))
+    bar = "█" * filled + "░" * (bar_width - filled)
+    if boot_ms < 100:
+        color = "green"
+    elif boot_ms < 400:
+        color = "yellow"
+    else:
+        color = "red"
+    return f"[{color}]{bar}[/] {boot_ms}ms"
+
+
 def icon_to_glyph(icon_name: str) -> str:
     if not icon_name:
         return DEFAULT_GLYPH
@@ -444,6 +595,146 @@ SOURCE_CYCLE: dict[SourceFilter, SourceFilter] = {
     "user": "system",
     "system": "all",
 }
+
+
+class RiskConfirm(ModalScreen[bool]):
+    """Modal asking the user to confirm disabling a critical entry."""
+
+    BINDINGS = [
+        Binding("y", "confirm", "Yes — disable"),
+        Binding("n,escape,q", "cancel", "No — cancel"),
+        Binding("enter", "confirm", "", priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    RiskConfirm {
+        align: center middle;
+    }
+    #risk-dialog {
+        width: 64;
+        height: auto;
+        background: $surface;
+        border: thick $warning;
+        padding: 1 2;
+    }
+    #risk-title {
+        color: $warning;
+        text-style: bold;
+        height: 1;
+    }
+    #risk-body {
+        color: $foreground;
+        margin: 1 0;
+        height: auto;
+    }
+    #risk-keys {
+        color: $foreground 70%;
+        height: 1;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._name = name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="risk-dialog"):
+            yield Label("⚠  Disable a session-critical entry?", id="risk-title")
+            yield Static(
+                f"You're about to disable [bold]{self._name}[/].\n\n"
+                "This entry looks like it's part of session plumbing "
+                "(audio, secrets, input method, portal, etc.). "
+                "Disabling it may break the next login and require "
+                "a manual fix from a TTY.",
+                id="risk-body",
+                markup=True,
+            )
+            yield Static("[bold]y[/]  yes, disable     [bold]n[/]  cancel", id="risk-keys")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class DesktopFileEditor(ModalScreen[bool]):
+    """Modal that lets the user edit the .desktop file in a TextArea."""
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save"),
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    DesktopFileEditor {
+        align: center middle;
+    }
+    #edit-dialog {
+        width: 90%;
+        height: 80%;
+        background: $surface;
+        border: thick $accent;
+        padding: 0;
+    }
+    #edit-title {
+        background: $accent 40%;
+        color: $foreground;
+        text-style: bold;
+        padding: 0 2;
+        height: 1;
+    }
+    #edit-path {
+        background: $panel;
+        color: $accent;
+        padding: 0 2;
+        height: 1;
+    }
+    #edit-area {
+        height: 1fr;
+        border: none;
+    }
+    #edit-help {
+        background: $panel;
+        color: $foreground 70%;
+        padding: 0 2;
+        height: 1;
+    }
+    """
+
+    def __init__(self, name: str, path: Path, content: str) -> None:
+        super().__init__()
+        self._name = name
+        self._path = path
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="edit-dialog"):
+            yield Label(f"  {self._name}", id="edit-title")
+            yield Label(str(self._path), id="edit-path")
+            yield TextArea.code_editor(
+                self._content,
+                language="ini",
+                id="edit-area",
+                show_line_numbers=True,
+            )
+            yield Label(
+                "Ctrl+S to save   ·   Esc to cancel",
+                id="edit-help",
+            )
+
+    def action_save(self) -> None:
+        new_text = self.query_one("#edit-area", TextArea).text
+        try:
+            self._path.write_text(new_text, encoding="utf-8")
+        except OSError as exc:
+            self.notify(f"Save failed: {exc}", severity="error", timeout=3.0)
+            return
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class DesktopFilePreview(ModalScreen[None]):
@@ -596,6 +887,7 @@ class AutostartApp(App):
         Binding("z", "undo", "Undo"),
         Binding("i", "toggle_details", "Details"),
         Binding("slash", "search", "Search"),
+        Binding("e", "edit", "Edit file"),
         # DataTable's own enter binding fires RowSelected — we listen for
         # that event (see on_data_table_row_selected) instead of binding
         # enter directly. Keeping a non-firing binding here so Footer
@@ -669,6 +961,7 @@ class AutostartApp(App):
             table.add_column(" ", width=3)  # icon glyph
             table.add_column("State", width=8)
             table.add_column("Source", width=14)
+            table.add_column("Boot", width=15)
             table.add_column("Name")
             table.loading = True  # built-in spinner overlay
 
@@ -685,6 +978,16 @@ class AutostartApp(App):
         entry = self._current_entry()
         if entry is None:
             return
+        # If we're about to disable a session-critical entry, ask first.
+        if entry.enabled and is_critical(entry):
+            def on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._apply_toggle(entry)
+            self.push_screen(RiskConfirm(entry.name), on_confirm)
+            return
+        self._apply_toggle(entry)
+
+    def _apply_toggle(self, entry: Entry) -> None:
         kind = entry.kind
         (toggle_autostart if kind == "autostart" else toggle_launcher)(entry)
         verb = "Enabled" if entry.enabled else ("Disabled" if kind == "autostart" else "Hidden")
@@ -696,7 +999,6 @@ class AutostartApp(App):
             severity="information" if entry.enabled else "warning",
             timeout=4.0,
         )
-        # If a filter is active, the entry may have moved in/out of the view.
         no_filter = (
             self.state_filter == "all"
             and self.source_filter == "all"
@@ -743,6 +1045,33 @@ class AutostartApp(App):
     def action_toggle_details(self) -> None:
         pane = self.query_one("#details-pane")
         pane.toggle_class("-hidden")
+
+    def action_edit(self) -> None:
+        entry = self._current_entry()
+        if entry is None:
+            return
+        # Always edit the user-side override. If the entry is system-only,
+        # create the override first (a copy of the system file).
+        try:
+            path = ensure_user_override(entry)
+        except OSError as exc:
+            self.notify(f"Cannot create override: {exc}", severity="error", timeout=3.0)
+            return
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            self.notify(f"Read failed: {exc}", severity="error", timeout=3.0)
+            return
+
+        def on_done(saved: bool | None) -> None:
+            if not saved:
+                return
+            # The file may have changed enabled-state, name, exec, etc.
+            # Easiest correct refresh: re-read everything.
+            self.notify("Saved · reloading", timeout=1.5)
+            self.action_reload()
+
+        self.push_screen(DesktopFileEditor(entry.name, path, content), on_done)
 
     def action_search(self) -> None:
         inp = self.query_one("#search-input", Input)
@@ -940,6 +1269,11 @@ class AutostartApp(App):
 
         autostart = discover_autostart(progress)
         launcher = discover_launcher(progress)
+        # Scrape systemd-analyze blame in the same worker so we don't block
+        # the UI later. Best-effort: silently skipped if systemd isn't there.
+        boot = load_boot_times()
+        for e in (*autostart, *launcher):
+            e.boot_ms = match_boot_time(e, boot)
         self.call_from_thread(self._on_discovery_done, autostart, launcher)
 
     def _set_scan_progress(self, current: int, total: int) -> None:
@@ -1098,14 +1432,30 @@ class AutostartApp(App):
             lines += ["", "[bold]Categories[/]", f"[dim]{cat_pretty}[/]"]
         if e.exec_cmd:
             lines += ["", "[bold]Exec[/]", f"[dim]{e.exec_cmd}[/]"]
+        if e.boot_ms is not None:
+            lines += [
+                "",
+                "[bold]Boot cost[/]",
+                _boot_cell(e.boot_ms),
+            ]
+        if is_critical(e):
+            lines += [
+                "",
+                "[bold yellow]⚠ Session-critical[/]",
+                "[dim]Disabling this may break the next login.[/]",
+            ]
         if e.user_path:
             lines += ["", "[bold]User file[/]", f"[dim]{e.user_path}[/]"]
         if e.system_path:
             lines += ["", "[bold]System file[/]", f"[dim]{e.system_path}[/]"]
+        if e.user_path and e.system_path:
+            diff = render_override_diff(e)
+            if diff:
+                lines += ["", "[bold]Override diff[/]", diff]
         return "\n".join(lines)
 
 
-    def _row_cells(self, e: Entry) -> tuple[str, str, str, str]:
+    def _row_cells(self, e: Entry) -> tuple[str, str, str, str, str]:
         on_label = " ● ON " if e.kind == "autostart" else " ● SHOW"
         off_label = " ○ OFF" if e.kind == "autostart" else " ○ HIDE"
         state = (
@@ -1127,8 +1477,14 @@ class AutostartApp(App):
         source = f"[{source_color}]{e.source}[/]"
         if not e.enabled:
             source = f"[dim]{source}[/]"
-        name = e.name if e.enabled else f"[dim]{e.name}[/]"
-        return icon, state, source, name
+        boot = _boot_cell(e.boot_ms)
+        # Prepend a warning glyph to critical entries — visible reminder
+        # before you press Space.
+        prefix = "[bold yellow]⚠[/] " if is_critical(e) else ""
+        name = (
+            f"{prefix}{e.name}" if e.enabled else f"[dim]{prefix}{e.name}[/]"
+        )
+        return icon, state, source, boot, name
 
 
 def main() -> None:
