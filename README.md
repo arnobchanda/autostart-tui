@@ -119,8 +119,9 @@ row across the screen. Press `r` to re-sort.
 - **Undo** (`z`) — reverts the last toggle, with a short toast
 - **Bulk selection** (`v`) — vim-style visual range; pair it with
   `/` search to "select everything matching X and toggle the lot"
-- **Live details strip** under the table — the highlighted row's
-  `Exec=` command and source path stay visible at all times
+- **Two-line card rows** — Name + `Exec=` stacked on one card,
+  State + Source stacked on the right, so each entry reads at a
+  glance without sideways eye-tracking
 - **Async startup**: UI paints immediately with loading spinners; the
   ~150-file disk scan runs in a worker thread
 - **Omarchy theme integration**: reads
