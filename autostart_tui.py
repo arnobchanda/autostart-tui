@@ -669,13 +669,21 @@ class AutostartApp(App):
         )
 
 
+NAME_MAX = 55  # ellipsis past this so the table never needs horizontal scrolling
+
+
+def _truncate(s: str, limit: int = NAME_MAX) -> str:
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
 def _row_cells(e: Entry) -> tuple[str, str, str]:
     on_label = " ● ON " if e.kind == "autostart" else " ● SHOW"
     off_label = " ○ OFF" if e.kind == "autostart" else " ○ HIDE"
     state = (
         f"[bold green]{on_label}[/]" if e.enabled else f"[bold red]{off_label}[/]"
     )
-    name = e.name if e.enabled else f"[dim]{e.name}[/]"
+    short = _truncate(e.name)
+    name = short if e.enabled else f"[dim]{short}[/]"
     return state, e.source, name
 
 
