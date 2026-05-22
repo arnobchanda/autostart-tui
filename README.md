@@ -119,6 +119,12 @@ row across the screen. Press `r` to re-sort.
 - **Undo** (`z`) — reverts the last toggle, with a short toast
 - **Bulk selection** (`v`) — vim-style visual range; pair it with
   `/` search to "select everything matching X and toggle the lot"
+- **Profiles** (`p`) — named snapshots of the current on/off state
+  stored at `~/.config/autostart-tui/profiles.json`. Apply a profile
+  in one keystroke; the diff against current state is computed and
+  toggled as a batch. Banner shows the active profile when current
+  state matches one exactly. Use cases: "Work" hides Discord/Steam,
+  "Gaming" hides Slack, "Airplane" disables sync agents.
 - **Two-line card rows** — Name + `Exec=` stacked on one card,
   State + Source stacked on the right, so each entry reads at a
   glance without sideways eye-tracking
@@ -197,6 +203,7 @@ let your launcher pick a terminal for you.
 | `e` | Open the user override in `$EDITOR` (falls back to `vi`); reload + daemon-reload on exit |
 | `x` | Reset to system defaults — delete the user override for this entry |
 | `v` | Enter visual mode — `j`/`k` to extend, `space` toggles all selected, `Esc` cancels |
+| `p` | Open profile picker — `Enter` apply, `n` save current state, `d` delete |
 | `Enter` | Open `.desktop` file preview (Esc/q/Enter to close) |
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |
