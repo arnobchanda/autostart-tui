@@ -258,10 +258,18 @@ def toggle_launcher(entry: Entry) -> None:
     if cp is None:
         return
     new_visible = not entry.enabled
-    cp["Desktop Entry"]["NoDisplay"] = "false" if new_visible else "true"
-    # If a system file used Hidden=true to suppress, clear it on the override.
-    if not new_visible:
+    if new_visible:
+        # Showing: clear BOTH Hidden and NoDisplay, because either being
+        # true (in this override or inherited from the system file) would
+        # keep the entry hidden.
         cp["Desktop Entry"]["Hidden"] = "false"
+        cp["Desktop Entry"]["NoDisplay"] = "false"
+    else:
+        # Hiding: Hidden=true is the XDG-semantic "user deleted this entry"
+        # flag. Clear NoDisplay so the state is unambiguous if we toggle
+        # again later.
+        cp["Desktop Entry"]["Hidden"] = "true"
+        cp["Desktop Entry"]["NoDisplay"] = "false"
     _write_desktop(path, cp)
     entry.enabled = new_visible
 
@@ -435,6 +443,28 @@ def _truncate_value(s: str, limit: int = 80) -> str:
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
+def _summarize_override_effect(
+    entry: Entry, sys_keys: dict[str, str], usr_keys: dict[str, str]
+) -> str:
+    """Plain-English one-liner describing what the override does, so the
+    user doesn't have to reverse-engineer +/- lines to figure out intent."""
+    hidden = usr_keys.get("Hidden", sys_keys.get("Hidden", "false")).lower() == "true"
+    no_display = (
+        usr_keys.get("NoDisplay", sys_keys.get("NoDisplay", "false")).lower() == "true"
+    )
+    gnome_off = (
+        usr_keys.get("X-GNOME-Autostart-enabled", "true").lower() == "false"
+    )
+    if entry.kind == "autostart":
+        if hidden or gnome_off:
+            return "[yellow]Effect:[/] disables this autostart entry"
+        return "[green]Effect:[/] keeps this autostart entry enabled"
+    # launcher
+    if hidden or no_display:
+        return "[yellow]Effect:[/] hides this entry from app launchers"
+    return "[green]Effect:[/] keeps this entry visible in launchers"
+
+
 def render_override_diff(entry: Entry) -> str:
     """Show what the user override actually changes vs the system file.
 
@@ -442,17 +472,18 @@ def render_override_diff(entry: Entry) -> str:
     diff produces a lot of noise when the override is minimal (most of
     the system file's keys appear as "removed" even though the launcher
     would still fall back to them). We instead diff the parsed maps and
-    surface only:
+    surface:
+        * a plain-English summary of the override's net effect
         * keys the override modifies (red old → green new)
         * keys the override adds (green +)
-        * a compact summary of system-only keys (not in the override)
+        * a compact one-line summary of system-only keys
     """
     if entry.user_path is None or entry.system_path is None:
         return ""
     sys_keys = _desktop_entry_keys(entry.system_path)
     usr_keys = _desktop_entry_keys(entry.user_path)
 
-    out: list[str] = []
+    out: list[str] = [_summarize_override_effect(entry, sys_keys, usr_keys), ""]
 
     # Modified keys first — most relevant to "what did the override change".
     for k in sorted(usr_keys):
