@@ -1160,6 +1160,13 @@ class AutostartApp(App):
         border-top: solid $primary 40%;
     }
 
+    #boot-summary {
+        height: auto;
+        padding: 0 1;
+        background: $panel;
+        border-bottom: solid $primary 40%;
+    }
+
     Header {
         background: $primary 40%;
     }
@@ -1188,6 +1195,7 @@ class AutostartApp(App):
         Binding("r", "reload", "Reload"),
         Binding("1", "show_tab('autostart')", "Autostart"),
         Binding("2", "show_tab('launcher')", "Launcher"),
+        Binding("3", "show_tab('boot')", "Boot"),
         Binding("tab,right,l", "next_tab", "Next tab", show=False),
         Binding("shift+tab,left,h", "prev_tab", "Prev tab", show=False),
         Binding("q", "quit", "Quit"),
@@ -1231,6 +1239,16 @@ class AutostartApp(App):
                     yield DataTable(
                         id="launcher-table", cursor_type="row", zebra_stripes=True
                     )
+                with TabPane("󰓅  Boot [3]", id="boot-tab"):
+                    with Vertical():
+                        yield Static(
+                            "[dim italic]Loading boot times…[/]",
+                            id="boot-summary",
+                            markup=True,
+                        )
+                        yield DataTable(
+                            id="boot-table", cursor_type="row", zebra_stripes=True
+                        )
             with VerticalScroll(id="details-pane"):
                 yield Static(
                     "[dim italic]Loading…[/]", id="details-content", markup=True
@@ -1245,7 +1263,7 @@ class AutostartApp(App):
             self.theme = "omarchy"
             self._accent_color = theme.accent
 
-        for tid in ("#autostart-table", "#launcher-table"):
+        for tid in ("#autostart-table", "#launcher-table", "#boot-table"):
             table = self.query_one(tid, DataTable)
             table.add_column(" ", width=3)  # icon glyph
             table.add_column("State", width=8)
@@ -1298,6 +1316,9 @@ class AutostartApp(App):
             self._pulse_row(t, t.cursor_row, entry)
         else:
             self._populate(kind)
+        self._sync_inactive_view(entry)
+        if kind == "autostart":
+            self._refresh_boot_summary()
         self._refresh_banner()
         self._update_details()
 
@@ -1328,6 +1349,9 @@ class AutostartApp(App):
                     break
         else:
             self._populate(kind)
+        self._sync_inactive_view(entry)
+        if kind == "autostart":
+            self._refresh_boot_summary()
         self._refresh_banner()
         self._update_details()
 
@@ -1368,6 +1392,9 @@ class AutostartApp(App):
             self._pulse_row(t, t.cursor_row, entry)
         else:
             self._populate(entry.kind)
+        self._sync_inactive_view(entry)
+        if entry.kind == "autostart":
+            self._refresh_boot_summary()
         self._refresh_banner()
         self._update_details()
 
@@ -1452,15 +1479,13 @@ class AutostartApp(App):
 
     def action_cycle_state(self) -> None:
         self.state_filter = STATE_CYCLE[self.state_filter]
-        self._populate(self._active_kind())
-        self._populate(self._other_kind())
+        self._populate_all()
         self.notify(f"State filter: {self.state_filter}", timeout=1.0)
         self._refresh_banner()
 
     def action_cycle_source(self) -> None:
         self.source_filter = SOURCE_CYCLE[self.source_filter]
-        self._populate(self._active_kind())
-        self._populate(self._other_kind())
+        self._populate_all()
         self.notify(f"Source filter: {self.source_filter}", timeout=1.0)
         self._refresh_banner()
 
@@ -1472,8 +1497,7 @@ class AutostartApp(App):
         inp.value = ""
         inp.add_class("-hidden")
         inp.disabled = True
-        self._populate("autostart")
-        self._populate("launcher")
+        self._populate_all()
         self.notify("Filters cleared", timeout=1.0)
         self._refresh_banner()
 
@@ -1483,17 +1507,23 @@ class AutostartApp(App):
         self._update_preview()
         self._update_details()
 
+    _TAB_ORDER = ("autostart-tab", "launcher-tab", "boot-tab")
+
     def action_next_tab(self) -> None:
         tabs = self.query_one(TabbedContent)
-        tabs.active = "launcher-tab" if tabs.active == "autostart-tab" else "autostart-tab"
+        idx = self._TAB_ORDER.index(tabs.active) if tabs.active in self._TAB_ORDER else 0
+        tabs.active = self._TAB_ORDER[(idx + 1) % len(self._TAB_ORDER)]
         self._active_table().focus()
         self._update_preview()
         self._update_details()
 
     def action_prev_tab(self) -> None:
-        # With only two tabs, "prev" == "next" — kept separate for clarity
-        # so binding labels can differ if a third tab is added later.
-        self.action_next_tab()
+        tabs = self.query_one(TabbedContent)
+        idx = self._TAB_ORDER.index(tabs.active) if tabs.active in self._TAB_ORDER else 0
+        tabs.active = self._TAB_ORDER[(idx - 1) % len(self._TAB_ORDER)]
+        self._active_table().focus()
+        self._update_preview()
+        self._update_details()
 
     def action_down(self) -> None:
         self._active_table().action_cursor_down()
@@ -1554,15 +1584,26 @@ class AutostartApp(App):
 
     # --- helpers ---
 
+    # All three tabs feed off the two entry kinds: autostart-tab and
+    # boot-tab both surface `entries["autostart"]`. _active_kind() is
+    # what every action (toggle/undo/reset) cares about; _active_table()
+    # is the widget we update for the *current view*. Keeping these
+    # separate is what lets the Boot tab reuse every existing action
+    # without branching.
+    _TAB_TO_TABLE = {
+        "autostart-tab": "#autostart-table",
+        "launcher-tab": "#launcher-table",
+        "boot-tab": "#boot-table",
+    }
+
     def _active_kind(self) -> EntryKind:
         tabs = self.query_one(TabbedContent)
         return "launcher" if tabs.active == "launcher-tab" else "autostart"
 
-    def _other_kind(self) -> EntryKind:
-        return "launcher" if self._active_kind() == "autostart" else "autostart"
-
     def _active_table(self) -> DataTable:
-        return self.query_one(f"#{self._active_kind()}-table", DataTable)
+        tabs = self.query_one(TabbedContent)
+        tid = self._TAB_TO_TABLE.get(tabs.active, "#autostart-table")
+        return self.query_one(tid, DataTable)
 
     def _filtered(self, kind: EntryKind) -> list[Entry]:
         rs = self.entries[kind]
@@ -1628,10 +1669,10 @@ class AutostartApp(App):
     ) -> None:
         self.entries["autostart"] = autostart
         self.entries["launcher"] = launcher
-        for kind, tid in (("autostart", "#autostart-table"), ("launcher", "#launcher-table")):
-            table = self.query_one(tid, DataTable)
-            self._populate(kind)
-            table.loading = False
+        self._populate("autostart")  # also populates boot-table
+        self._populate("launcher")
+        for tid in ("#autostart-table", "#launcher-table", "#boot-table"):
+            self.query_one(tid, DataTable).loading = False
         self._update_preview()
         self._update_details()
         self._refresh_banner()
@@ -1644,7 +1685,9 @@ class AutostartApp(App):
             )
 
     def _populate(self, kind: EntryKind) -> None:
-        """Refresh the table view from the in-memory entries + current filters."""
+        """Refresh the table view from the in-memory entries + current filters.
+        For autostart, also refresh the Boot view since both feed off the
+        same data."""
         table = self.query_one(f"#{kind}-table", DataTable)
         cursor_row = table.cursor_row if table.row_count else 0
         table.clear()
@@ -1652,6 +1695,57 @@ class AutostartApp(App):
             table.add_row(*self._row_cells(e), key=e.desktop_id)
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
+        if kind == "autostart":
+            self._populate_boot()
+
+    def _populate_all(self) -> None:
+        self._populate("autostart")
+        self._populate("launcher")
+
+    def _populate_boot(self) -> None:
+        """Refresh the Boot Impact view: filtered autostart entries with
+        a matched boot_ms, sorted by ms descending. Stable across toggles
+        — we only resort here (called on initial discovery, reload, and
+        filter changes), so toggling a row in this view does not yank it
+        across the screen."""
+        table = self.query_one("#boot-table", DataTable)
+        cursor_row = table.cursor_row if table.row_count else 0
+        table.clear()
+        rows = [e for e in self._filtered("autostart") if e.boot_ms is not None]
+        rows.sort(key=lambda e: e.boot_ms or 0, reverse=True)
+        for e in rows:
+            table.add_row(*self._row_cells(e), key=e.desktop_id)
+        if table.row_count:
+            table.move_cursor(row=min(cursor_row, table.row_count - 1))
+        self._refresh_boot_summary()
+
+    def _refresh_boot_summary(self) -> None:
+        """Three numbers, one line: live boot cost of enabled autostart
+        entries, ms already saved by disabling things, and how many
+        autostart entries we couldn't match to a systemd-analyze unit
+        (so the user knows the totals are incomplete)."""
+        widget = self.query_one("#boot-summary", Static)
+        a = self.entries["autostart"]
+        if not a:
+            widget.update("[dim italic]Loading boot times…[/]")
+            return
+        with_data = [e for e in a if e.boot_ms is not None]
+        if not with_data:
+            widget.update(
+                "[yellow]No systemd-analyze blame data available.[/]  "
+                "[dim]Install systemd or check `systemctl --user` is reachable.[/]"
+            )
+            return
+        enabled_ms = sum(e.boot_ms or 0 for e in with_data if e.enabled)
+        saved_ms = sum(e.boot_ms or 0 for e in with_data if not e.enabled)
+        unmatched = sum(1 for e in a if e.boot_ms is None)
+        parts = [
+            f"[bold]Enabled boot cost:[/] [{self._accent_color}]{enabled_ms} ms[/]",
+            f"[bold green]Disabled saves:[/] {saved_ms} ms",
+        ]
+        if unmatched:
+            parts.append(f"[dim]{unmatched} unmatched[/]")
+        widget.update("   [dim]│[/]   ".join(parts))
 
     def _refresh_banner(self) -> None:
         """Rewrite the banner stats line: counts + active filters."""
@@ -1685,6 +1779,24 @@ class AutostartApp(App):
         for col_idx, value in enumerate(self._row_cells(entry)):
             table.update_cell_at((row_idx, col_idx), value)
         self._update_preview()
+
+    def _sync_inactive_view(self, entry: Entry) -> None:
+        """When an autostart entry toggles, the row needs to update in
+        whichever of (autostart-table, boot-table) isn't the active one,
+        otherwise switching tabs shows stale state. Cheap — just an
+        in-place cell rewrite, no re-sort."""
+        if entry.kind != "autostart":
+            return
+        active = self._active_table()
+        for tid in ("#autostart-table", "#boot-table"):
+            table = self.query_one(tid, DataTable)
+            if table is active:
+                continue
+            for row_idx in range(table.row_count):
+                key = table.coordinate_to_cell_key((row_idx, 0)).row_key
+                if key.value == entry.desktop_id:
+                    self._refresh_row(table, row_idx, entry)
+                    break
 
     def _pulse_row(self, table: DataTable, row_idx: int, entry: Entry) -> None:
         """Briefly invert the row in green/red after a toggle, then settle."""
