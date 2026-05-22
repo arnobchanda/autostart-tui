@@ -14,7 +14,7 @@ file, run by [`uv`](https://docs.astral.sh/uv/) with [Textual](https://textual.t
 for the UI — installs in seconds, no manual venv, no system-level
 packages, and follows your current Omarchy theme automatically.
 
-## Two tabs
+## Three tabs
 
 ### 1. Autostart
 
@@ -47,6 +47,20 @@ rofi, fuzzel, GNOME menu, KDE Kicker, …).
 Same non-destructive rule: system files stay untouched; user-side
 overrides land in `~/.local/share/applications/`.
 
+### 3. Boot Impact
+
+A sorted view of autostart entries by their `systemd-analyze blame`
+cost in ms. The header surfaces three live numbers:
+
+```
+Enabled boot cost: 1089 ms   ·   Disabled saves: 200 ms   ·   4 unmatched
+```
+
+Toggling an entry off updates the totals immediately, so you can see
+the effect of a planned cleanup before reloading. Sort order is
+stable across toggles — disabling the #1 offender doesn't yank the
+row across the screen. Press `r` to re-sort.
+
 > **About overrides**: per the XDG Desktop Entry Spec, a user `.desktop`
 > file with the same name as a system one **fully shadows** the system
 > file — fields are not merged. To keep entries from silently
@@ -63,8 +77,9 @@ overrides land in `~/.local/share/applications/`.
 
 ## Features
 
-- **Two tabs** for autostart entries and launcher visibility (`1`/`2`,
-  arrow keys, `h`/`l`, or `Tab` to switch)
+- **Three tabs** for autostart entries, launcher visibility, and a
+  boot-impact view (`1`/`2`/`3`, arrow keys, `h`/`l`, or `Tab` to
+  switch)
 - **Filters**: cycle by state (`f`: all → on → off) and source (`s`:
   all → user → system); `c` clears both. Active filters surface in the
   header subtitle.
@@ -163,7 +178,7 @@ let your launcher pick a terminal for you.
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |
 | `c` | Clear both filters |
-| `1` / `2` | Jump to Autostart / Launcher tab |
+| `1` / `2` / `3` | Jump to Autostart / Launcher / Boot tab |
 | `Tab` / `→` / `l` | Next tab |
 | `Shift+Tab` / `←` / `h` | Previous tab |
 | `r` | Reload from disk |
