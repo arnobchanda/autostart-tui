@@ -52,8 +52,14 @@ overrides land in `~/.local/share/applications/`.
 > file — fields are not merged. To keep entries from silently
 > disappearing from launchers, the toggle copies the whole system entry
 > into the user override on first write, and backfills any missing keys
-> on subsequent writes. The override panel still only shows the keys
-> the user actually changes.
+> on subsequent writes. On startup, the TUI also scans for any existing
+> incomplete overrides (e.g. left behind by older versions or other
+> tools) and repairs them automatically. The override panel still only
+> shows the keys the user actually changes.
+>
+> Press `x` to reset the highlighted entry to system defaults — this
+> deletes the user override file and re-reads the entry from the
+> system file.
 
 ## Features
 
@@ -147,6 +153,7 @@ let your launcher pick a terminal for you.
 | `i` | Show / hide the details side-panel |
 | `/` | Focus the search box (substring match on Name + Exec) |
 | `e` | Open the user override in an inline editor (`Ctrl+S` save, `Esc` cancel) |
+| `x` | Reset to system defaults — delete the user override for this entry |
 | `Enter` | Open `.desktop` file preview (Esc/q/Enter to close) |
 | `f` | Cycle state filter (all → on → off) |
 | `s` | Cycle source filter (all → user → system) |

@@ -240,6 +240,60 @@ def _count_desktop_files() -> int:
     return total
 
 
+def reset_to_system(entry: Entry) -> bool:
+    """Delete the user override and re-read state from the system file.
+
+    Returns True if the override was removed, False if there was nothing
+    to reset (no user file) or the entry has no system file to fall back
+    to (deleting the user file would orphan the entry).
+    """
+    if entry.user_path is None or entry.system_path is None:
+        return False
+    try:
+        entry.user_path.unlink()
+    except FileNotFoundError:
+        pass
+    entry.user_path = None
+    cp = _read_desktop(entry.system_path)
+    if cp is not None:
+        entry.enabled = (
+            _autostart_enabled(cp) if entry.kind == "autostart"
+            else _launcher_visible(cp)
+        )
+    return True
+
+
+def _override_is_incomplete(user_path: Path, system_path: Path) -> bool:
+    """True if the user override is missing keys that XDG launchers
+    require to render an entry — Name, Exec, or Type — but the system
+    file has them. Such overrides silently drop the entry from launchers
+    because user files fully shadow system files (no field merging)."""
+    user_cp = _read_desktop(user_path)
+    sys_cp = _read_desktop(system_path)
+    if user_cp is None or sys_cp is None:
+        return False
+    user_de = user_cp["Desktop Entry"]
+    sys_de = sys_cp["Desktop Entry"]
+    for k in ("Name", "Exec", "Type"):
+        if k in sys_de and k not in user_de:
+            return True
+    return False
+
+
+def repair_incomplete_overrides(entries: list[Entry]) -> int:
+    """Walk the discovered entries and backfill any user overrides that
+    are missing essential keys, so launchers stop silently dropping
+    them. Returns the number of files repaired."""
+    repaired = 0
+    for e in entries:
+        if e.user_path is None or e.system_path is None:
+            continue
+        if _override_is_incomplete(e.user_path, e.system_path):
+            _backfill_missing_keys(e.user_path, e.system_path)
+            repaired += 1
+    return repaired
+
+
 def toggle_autostart(entry: Entry) -> None:
     path = ensure_user_override(entry)
     cp = _read_desktop(path)
@@ -991,6 +1045,7 @@ class AutostartApp(App):
         Binding("i", "toggle_details", "Details"),
         Binding("slash", "search", "Search"),
         Binding("e", "edit", "Edit file"),
+        Binding("x", "reset_to_system", "Reset"),
         # DataTable's own enter binding fires RowSelected — we listen for
         # that event (see on_data_table_row_selected) instead of binding
         # enter directly. Keeping a non-firing binding here so Footer
@@ -1143,6 +1198,46 @@ class AutostartApp(App):
                     break
         else:
             self._populate(kind)
+        self._refresh_banner()
+        self._update_details()
+
+    def action_reset_to_system(self) -> None:
+        entry = self._current_entry()
+        if entry is None:
+            return
+        if entry.user_path is None:
+            self.notify("No user override to reset", severity="warning", timeout=2.0)
+            return
+        if entry.system_path is None:
+            self.notify(
+                "User-only entry — no system file to revert to. "
+                "Edit or delete the file manually.",
+                severity="warning",
+                timeout=4.0,
+            )
+            return
+        try:
+            ok = reset_to_system(entry)
+        except OSError as exc:
+            self.notify(f"Reset failed: {exc}", severity="error", timeout=3.0)
+            return
+        if not ok:
+            self.notify("Nothing to reset", severity="warning", timeout=2.0)
+            return
+        # Reset is intentional — clear any pending undo target so z doesn't
+        # try to "undo" by toggling the now-resetted entry.
+        self._last_toggle_id = None
+        self.notify(f"Reset to system: {entry.name}", timeout=3.0)
+        no_filter = (
+            self.state_filter == "all"
+            and self.source_filter == "all"
+            and not self.search_query
+        )
+        if no_filter:
+            t = self._active_table()
+            self._pulse_row(t, t.cursor_row, entry)
+        else:
+            self._populate(entry.kind)
         self._refresh_banner()
         self._update_details()
 
@@ -1376,12 +1471,18 @@ class AutostartApp(App):
 
         autostart = discover_autostart(progress)
         launcher = discover_launcher(progress)
+        # Self-heal: backfill any user overrides that previous versions
+        # (or other tools) left as two-line stubs. Toggling already
+        # backfills on demand, but launchers may silently drop entries
+        # in the meantime — repair on load so the user doesn't have to
+        # touch each one to fix it.
+        repaired = repair_incomplete_overrides(autostart) + repair_incomplete_overrides(launcher)
         # Scrape systemd-analyze blame in the same worker so we don't block
         # the UI later. Best-effort: silently skipped if systemd isn't there.
         boot = load_boot_times()
         for e in (*autostart, *launcher):
             e.boot_ms = match_boot_time(e, boot)
-        self.call_from_thread(self._on_discovery_done, autostart, launcher)
+        self.call_from_thread(self._on_discovery_done, autostart, launcher, repaired)
 
     def _set_scan_progress(self, current: int, total: int) -> None:
         bar_width = 20
@@ -1393,7 +1494,7 @@ class AutostartApp(App):
         )
 
     def _on_discovery_done(
-        self, autostart: list[Entry], launcher: list[Entry]
+        self, autostart: list[Entry], launcher: list[Entry], repaired: int = 0
     ) -> None:
         self.entries["autostart"] = autostart
         self.entries["launcher"] = launcher
@@ -1404,6 +1505,13 @@ class AutostartApp(App):
         self._update_preview()
         self._update_details()
         self._refresh_banner()
+        if repaired:
+            s = "" if repaired == 1 else "s"
+            self.notify(
+                f"Repaired {repaired} incomplete override{s} "
+                "(backfilled missing keys from system files)",
+                timeout=5.0,
+            )
 
     def _populate(self, kind: EntryKind) -> None:
         """Refresh the table view from the in-memory entries + current filters."""
